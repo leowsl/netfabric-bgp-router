@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-r = "0.0.9"
+futures-util = "0.3.31"
+reqwest = { version = "0.12.15", features = ["stream"] }
+tokio = { version = "1.44.2", features = ["full"] }

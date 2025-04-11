@@ -1,12 +1,14 @@
 use std::sync::mpsc;
 
 struct Router {
+    id: u8,
     value: i32
 }
 
 impl Router {
     fn new() -> Self {
         Router {
+            id: 0,
             value: 0
         }
     }
