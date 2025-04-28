@@ -5,6 +5,7 @@ use components::{live_bgp_parser, router};
 use utils::thread_manager::{ThreadManager, Message};
 use env_logger;
 use log::info;
+
 #[derive(Debug)]
 struct StringMessage(String);
 
@@ -18,18 +19,17 @@ async fn main() {
 
     let mut tm: ThreadManager = ThreadManager::new();
 
-    if tm.message_bus.create_channel(0, 5) {
-        
+    if let Some(id) = tm.message_bus.create_channel(0) {
         for i in 0..10 {
             info!("Sending message {}", i);
-            let tx = tm.message_bus.publish(0).unwrap();
+            let tx = tm.message_bus.publish(id).unwrap();
             tm.start_thread(move || {
                 tx.send(Box::new(StringMessage(format!("Message {}", i)))).unwrap();
             });
         }
         
-        let rx = tm.message_bus.subscribe(0).unwrap();
-        tm.message_bus.stop(0);
+        let rx = tm.message_bus.subscribe(id).unwrap();
+        tm.message_bus.stop(id);
         
         while let Ok(msg) = rx.recv() {
             println!("Received message: {}", msg.cast::<StringMessage>().unwrap().0);

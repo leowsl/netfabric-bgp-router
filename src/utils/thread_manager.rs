@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::any::Any;
 use std::sync::Arc;
 use log::error;
+use uuid::Uuid;
 
 pub trait Message: Any + Send + Sync + 'static {}
 
@@ -14,8 +15,8 @@ impl dyn Message {
 }
 
 pub struct MessageBus {
-    senders: HashMap<u8, Arc<SyncSender<Box<dyn Message>>>>,
-    receivers: HashMap<u8, Receiver<Box<dyn Message>>>
+    senders: HashMap<Uuid, Arc<SyncSender<Box<dyn Message>>>>,
+    receivers: HashMap<Uuid, Receiver<Box<dyn Message>>>
 }
 
 impl MessageBus {
@@ -26,19 +27,26 @@ impl MessageBus {
         }
     }
 
-    pub fn create_channel(&mut self, id: u8, bound: usize) -> bool {
-        if self.senders.contains_key(&id) || self.receivers.contains_key(&id) {
-            error!("Channel with id {} already exists", id);
+    pub fn create_channel(&mut self, bound: usize) -> Option<Uuid> {
+        let uuid = Uuid::new_v4();
+        if self.create_channel_with_uuid(bound, uuid) {
+            return Some(uuid);
+        }
+        return None;
+    }
+
+    pub fn create_channel_with_uuid(&mut self, bound: usize, uuid: Uuid) -> bool {
+        if self.senders.contains_key(&uuid) || self.receivers.contains_key(&uuid) {
+            error!("Channel with id {} already exists", uuid);
             return false;
         }
-        
         let (tx, rx) = sync_channel::<Box<dyn Message>>(bound);
-        self.senders.insert(id, Arc::new(tx));
-        self.receivers.insert(id, rx);
+        self.senders.insert(uuid, Arc::new(tx));
+        self.receivers.insert(uuid, rx);
         return true;
     }
     
-    pub fn subscribe(&mut self, id: u8) -> Option<Receiver<Box<dyn Message>>> {
+    pub fn subscribe(&mut self, id: Uuid) -> Option<Receiver<Box<dyn Message>>> {
         if !self.receivers.contains_key(&id) {
             error!("Couldn't find a receiver with id {}", id);
             return None;
@@ -46,7 +54,7 @@ impl MessageBus {
         return Some(self.receivers.remove(&id).unwrap());
     }
     
-    pub fn publish(&self, id: u8) -> Option<Arc<SyncSender<Box<dyn Message>>>> {
+    pub fn publish(&self, id: Uuid) -> Option<Arc<SyncSender<Box<dyn Message>>>> {
         if !self.senders.contains_key(&id) {
             error!("Couldn't find a sender with id {}", id);
             return None;
@@ -54,36 +62,45 @@ impl MessageBus {
         return self.senders.get(&id).cloned();
     }
 
-    pub fn stop(&mut self, id: u8) {
+    pub fn stop(&mut self, id: Uuid) {
         self.senders.remove(&id);
         self.receivers.remove(&id);
     }
 }
 
 pub struct ThreadManager {
-    pub thread_handles: Vec<thread::JoinHandle<()>>,
+    pub thread_handles: HashMap<Uuid, thread::JoinHandle<()>>,
     pub message_bus: MessageBus,
 }
 
 impl ThreadManager {
     pub fn new() -> Self {
         ThreadManager {
-            thread_handles: Vec::new(),
+            thread_handles: HashMap::new(),
             message_bus: MessageBus::new(),
         }
     }
 
-    pub fn start_thread<F>(&mut self, function: F) 
+    pub fn start_thread<F>(&mut self, function: F) -> Uuid
     where 
-        F: Fn() +Send + 'static,
+        F: Fn() + Send + 'static,
     {
+        let id = Uuid::new_v4();
         let handle = thread::spawn(move || function());
-        self.thread_handles.push(handle);
+        self.thread_handles.insert(id, handle);
+        return id;
+    }
+
+    pub fn join_thread(&mut self, id: Uuid) {
+        if let Some(handle) = self.thread_handles.remove(&id) {
+            handle.join().unwrap();
+        }
     }
 
     pub fn join_all(&mut self) {
-        for handle in self.thread_handles.drain(..) {
-            handle.join().unwrap();
+        let uuids: Vec<Uuid> = self.thread_handles.keys().cloned().collect();
+        for uuid in uuids {
+            self.join_thread(uuid);
         }
     }
 }
