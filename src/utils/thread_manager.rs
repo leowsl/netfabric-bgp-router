@@ -1,14 +1,48 @@
 use std::thread;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::collections::HashMap;
+use std::any::Any;
+
+pub trait Message: Any + Send + Sync + 'static {}
+
+impl dyn Message {
+    pub fn cast<T: 'static>(&self) -> Option<&T> {
+        (self as &dyn Any).downcast_ref::<T>()
+    }
+}
+
+pub struct MessageBus {
+    channels: HashMap<u8, Sender<Box<dyn Message>>>
+}
+
+impl MessageBus {
+    pub fn new() -> Self {
+        MessageBus {
+            channels: HashMap::new(),
+        }
+    }
+    
+    pub fn subscribe(&mut self, id: u8) -> Receiver<Box<dyn Message>> {
+        let (tx, rx) = channel::<Box<dyn Message>>();
+        self.channels.insert(id, tx);
+        return rx;
+    }
+    
+    pub fn publish(&self, id: u8) -> Sender<Box<dyn Message>> {
+        return self.channels.get(&id).unwrap().clone();
+    }
+}
 
 pub struct ThreadManager {
-    thread_handles: Vec<thread::JoinHandle<()>>,
+    pub thread_handles: Vec<thread::JoinHandle<()>>,
+    pub message_bus: MessageBus,
 }
 
 impl ThreadManager {
     pub fn new() -> Self {
         ThreadManager {
-            thread_handles: Vec::new()
+            thread_handles: Vec::new(),
+            message_bus: MessageBus::new(),
         }
     }
 
