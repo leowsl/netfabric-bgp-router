@@ -1,11 +1,10 @@
 use std::sync::mpsc;
 use crate::components::live_bgp_parser::RisLiveMessage;
-use log::{error, info, warn};
+use log::{info, warn};
 
 pub struct Router {
     id: u8,
     processed_messages: u64,
-    error_count: u64,
 }
 
 impl Router {
@@ -13,87 +12,51 @@ impl Router {
         Router {
             id,
             processed_messages: 0,
-            error_count: 0,
+        }
+    }
+
+    fn log_status(&self) {
+        if self.processed_messages % 1000 == 0 {
+            info!("Router {}: Processed {} messages", self.id, self.processed_messages);
         }
     }
 
     fn process_message(&mut self, msg: RisLiveMessage) {
         self.processed_messages += 1;
-        println!("Router {}: Processed message {} - Type: {}, Peer: {}", 
-            self.id,
-            self.processed_messages,
-            msg.msg_type,
-            msg.data.peer
-        );
+        
+        let peer_info = format!("{} (ASN: {})", msg.data.peer, msg.data.peer_asn);
         
         match msg.data.msg_type.as_str() {
             "UPDATE" => {
-                if let Some(announcements) = &msg.data.announcements {
-                    for announcement in announcements {
-                        info!("Router {}: Received announcement from {} (ASN: {}) - Next hop: {}, Prefixes: {:?}", 
-                            self.id,
-                            msg.data.peer,
-                            msg.data.peer_asn,
-                            announcement.next_hop,
-                            announcement.prefixes
-                        );
+                if let Some(announcements) = msg.data.announcements {
+                    for ann in announcements {
+                        info!("Router {}: Announcement from {} - Next hop: {}, Prefixes: {:?}", 
+                            self.id, peer_info, ann.next_hop, ann.prefixes);
                     }
                 }
-                if let Some(withdrawals) = &msg.data.withdrawals {
+                if let Some(withdrawals) = msg.data.withdrawals {
                     for prefix in withdrawals {
-                        info!("Router {}: Received withdrawal from {} (ASN: {}) - Prefix: {}", 
-                            self.id,
-                            msg.data.peer,
-                            msg.data.peer_asn,
-                            prefix
-                        );
+                        info!("Router {}: Withdrawal from {} - Prefix: {}", 
+                            self.id, peer_info, prefix);
                     }
                 }
             },
-            "OPEN" => {
-                info!("Router {}: Received OPEN message from {} (ASN: {})", 
-                    self.id,
-                    msg.data.peer,
-                    msg.data.peer_asn
-                );
-            },
-            "KEEPALIVE" => {
-                // Silently process keepalives
-            },
-            _ => {
-                warn!("Router {}: Received unknown message type: {} from {} (ASN: {})", 
-                    self.id,
-                    msg.data.msg_type,
-                    msg.data.peer,
-                    msg.data.peer_asn
-                );
-            }
-        }
-
-        if self.processed_messages % 1000 == 0 {
-            info!("Router {}: Processed {} messages ({} errors)", 
-                self.id,
-                self.processed_messages,
-                self.error_count
-            );
+            "OPEN" => info!("Router {}: OPEN from {}", self.id, peer_info),
+            "KEEPALIVE" => (),
+            _ => warn!("Router {}: Unknown message type: {} from {}", 
+                self.id, msg.data.msg_type, peer_info),
         }
     }
 }
 
-pub fn start(
-    id: u8,
-    input_stream: mpsc::Receiver<RisLiveMessage>
-) {
+pub fn start(id: u8, input_stream: mpsc::Receiver<RisLiveMessage>) {
     let mut router = Router::new(id);
     info!("Router {} started", id);
 
     for message in input_stream {
         router.process_message(message);
+        router.log_status();
     }
 
-    info!("Router {} shutting down after processing {} messages ({} errors)", 
-        id,
-        router.processed_messages,
-        router.error_count
-    );
+    info!("Router {} shutting down - processed {} messages", id, router.processed_messages);
 }

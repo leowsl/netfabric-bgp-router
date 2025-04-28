@@ -3,29 +3,32 @@ use reqwest::get;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::Sender;
+use thiserror::Error;
 
 static RIS_STREAM_URL: &str = "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
 
-pub async fn start_stream(sender: Sender<RisLiveMessage>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf: String = String::new();
+#[derive(Error, Debug)]
+pub enum BgpParserError {
+    #[error("Failed to fetch stream: {0}")]
+    StreamError(#[from] reqwest::Error),
+    #[error("Failed to parse message: {0}")]
+    ParseError(#[from] serde_json::Error),
+    #[error("Failed to send message: {0}")]
+    SendError(#[from] std::sync::mpsc::SendError<RisLiveMessage>),
+}
 
-    let mut stream = get(RIS_STREAM_URL)
-        .await?
-        .bytes_stream();
+pub async fn start_stream(sender: Sender<RisLiveMessage>) -> Result<(), BgpParserError> {
+    let mut stream = get(RIS_STREAM_URL).await?.bytes_stream();
+    let mut buf = String::new();
 
     while let Some(chunk) = stream.next().await {
         for byte in chunk? {
-            if byte == '\n' as u8 {
-                // Line is complete
-                if let Ok(msg) = deserialize_line(&buf) {
-                    sender.send(msg).unwrap();
+            if byte == b'\n' {
+                if let Ok(msg) = serde_json::from_str(&buf) {
+                    sender.send(msg)?;
                 }
-
-                // Flush buffer
-                drop(buf);
-                buf = String::new();
-            }
-            else {
+                buf.clear();
+            } else {
                 buf.push(byte as char);
             }
         }
@@ -62,9 +65,4 @@ pub struct RisLiveMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
     pub data: RisLiveData,
-}
-
-fn deserialize_line(line: &String) -> Result<RisLiveMessage, Box<dyn std::error::Error>> {
-    let message: RisLiveMessage = serde_json::from_str(line.as_str())?;
-    return Ok(message);
 }
