@@ -2,8 +2,13 @@ mod utils;
 mod components;
 
 use components::{live_bgp_parser, router};
-use std::{sync::mpsc::channel, thread};
+use utils::thread_manager::{ThreadManager, Message};
 use env_logger;
+use log::info;
+#[derive(Debug)]
+struct StringMessage(String);
+
+impl Message for StringMessage {}
 
 #[tokio::main]
 async fn main() {
@@ -11,12 +16,28 @@ async fn main() {
         env_logger::Env::default().default_filter_or("info")
     );
 
-    let (tx, rx) = channel();
-    let router_handle = thread::spawn(|| router::start(0, rx));
+    let mut tm: ThreadManager = ThreadManager::new();
 
-    if let Err(e) = live_bgp_parser::start_stream(tx).await {
-        eprintln!("BGP stream error: {}", e);
+    if tm.message_bus.create_channel(0, 5) {
+        
+        for i in 0..10 {
+            info!("Sending message {}", i);
+            let tx = tm.message_bus.publish(0).unwrap();
+            tm.start_thread(move || {
+                tx.send(Box::new(StringMessage(format!("Message {}", i)))).unwrap();
+            });
+        }
+        
+        let rx = tm.message_bus.subscribe(0).unwrap();
+        tm.message_bus.stop(0);
+        
+        while let Ok(msg) = rx.recv() {
+            println!("Received message: {}", msg.cast::<StringMessage>().unwrap().0);
+        }
+
+        tm.join_all();        
+        info!("Done");
     }
 
-    router_handle.join().unwrap();
+    return;
 }
