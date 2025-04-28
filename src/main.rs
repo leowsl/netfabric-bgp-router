@@ -6,13 +6,28 @@ use std::thread;
 use std::time::Duration;
 use components::router;
 use std::sync::mpsc::channel;
-
 use components::live_bgp_parser;
 
 #[tokio::main]
 async fn main() {
-    println!("Calling stream handler");
-    live_bgp_parser::start_stream().await;
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    
+    let (tx, rx) = channel::<live_bgp_parser::RisLiveMessage>();
+    
+    // Start the router in a separate thread
+    let router_handle = thread::spawn(move || {
+        router::start(0, rx);
+    });
+
+    // Start the BGP stream
+    println!("Starting BGP stream handler");
+    if let Err(e) = live_bgp_parser::start_stream(tx).await {
+        eprintln!("Error in BGP stream: {}", e);
+    }
+
+    // Wait for the router to finish (it won't unless there's an error)
+    router_handle.join().unwrap();
 }
 
 // fn main() {

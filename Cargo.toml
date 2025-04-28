@@ -1,11 +1,20 @@
 [package]
 name = "netfabric-bgp"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-futures-util = "0.3.31"
-reqwest = { version = "0.12.15", features = ["stream", "json"] }
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
-tokio = { version = "1.44.2", features = ["full"] }
+futures-util = "0.3"
+reqwest = { version = "0.11", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+log = "0.4"
+env_logger = "0.10"
+
+[profile.dev]
+debug = true
+overflow-checks = true
+
+[profile.dev.env]
+RUST_LOG = "debug"

@@ -1,16 +1,13 @@
 use std::str;
 use reqwest::get;
 use futures_util::StreamExt;
-use serde_json::Value;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use std::thread;
+use std::sync::mpsc::Sender;
 
 static RIS_STREAM_URL: &str = "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
 
-pub async fn start_stream() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_stream(sender: Sender<RisLiveMessage>) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf: String = String::new();
-    let mut messages: Vec<RisLiveMessage> = Vec::new();
 
     let mut stream = get(RIS_STREAM_URL)
         .await?
@@ -21,7 +18,7 @@ pub async fn start_stream() -> Result<(), Box<dyn std::error::Error>> {
             if byte == '\n' as u8 {
                 // Line is complete
                 if let Ok(msg) = deserialize_line(&buf) {
-                    messages.push(msg);
+                    sender.send(msg).unwrap();
                 }
 
                 // Flush buffer
@@ -38,33 +35,33 @@ pub async fn start_stream() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Announcement {
-    next_hop: String,
-    prefixes: Vec<String>,
+pub struct Announcement {
+    pub next_hop: String,
+    pub prefixes: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct RisLiveData {
-    timestamp: f64,
-    peer: String,
-    peer_asn: String,
-    id: String,
-    host: String,
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RisLiveData {
+    pub timestamp: f64,
+    pub peer: String,
+    pub peer_asn: String,
+    pub id: String,
+    pub host: String,
     #[serde(rename = "type")]
-    msg_type: String,
-    path: Option<Vec<u64>>,
-    community: Option<Vec<Vec<u64>>>,
-    origin: Option<String>,
-    announcements: Option<Vec<Announcement>>,
-    raw: Option<String>,
-    withdrawals: Option<Vec<String>>,
+    pub msg_type: String,
+    pub path: Option<Vec<u64>>,
+    pub community: Option<Vec<Vec<u64>>>,
+    pub origin: Option<String>,
+    pub announcements: Option<Vec<Announcement>>,
+    pub raw: Option<String>,
+    pub withdrawals: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct RisLiveMessage {
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RisLiveMessage {
     #[serde(rename = "type")]
-    msg_type: String,
-    data: RisLiveData,
+    pub msg_type: String,
+    pub data: RisLiveData,
 }
 
 fn deserialize_line(line: &String) -> Result<RisLiveMessage, Box<dyn std::error::Error>> {
