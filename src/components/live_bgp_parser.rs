@@ -1,9 +1,10 @@
-use std::str;
 use reqwest::get;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::sync::mpsc::Sender;
 use thiserror::Error;
+use log::info;
+use crate::utils::thread_manager::{Message, MessageSender};
+use tokio::runtime::Runtime;
 
 static RIS_STREAM_URL: &str = "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
 
@@ -14,27 +15,7 @@ pub enum BgpParserError {
     #[error("Failed to parse message: {0}")]
     ParseError(#[from] serde_json::Error),
     #[error("Failed to send message: {0}")]
-    SendError(#[from] std::sync::mpsc::SendError<RisLiveMessage>),
-}
-
-pub async fn start_stream(sender: Sender<RisLiveMessage>) -> Result<(), BgpParserError> {
-    let mut stream = get(RIS_STREAM_URL).await?.bytes_stream();
-    let mut buf = String::new();
-
-    while let Some(chunk) = stream.next().await {
-        for byte in chunk? {
-            if byte == b'\n' {
-                if let Ok(msg) = serde_json::from_str(&buf) {
-                    sender.send(msg)?;
-                }
-                buf.clear();
-            } else {
-                buf.push(byte as char);
-            }
-        }
-    }
-
-    Ok(())
+    SendError(#[from] std::sync::mpsc::SendError<Box<dyn Message>>),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -65,4 +46,32 @@ pub struct RisLiveMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
     pub data: RisLiveData,
+}
+impl Message for RisLiveMessage {}
+
+pub async fn start_stream(sender: MessageSender) -> Result<(), BgpParserError> {
+    let mut stream = get(RIS_STREAM_URL).await?.bytes_stream();
+    let mut buf = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        for byte in chunk? {
+            if byte == b'\n' {
+                if let Ok(msg) = serde_json::from_str::<RisLiveMessage>(&buf) {
+                    sender.send(Box::new(msg))?;
+                }
+                buf.clear();
+            } else {
+                buf.push(byte as char);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn main(sender: MessageSender) {
+    info!("Starting live BGP parser");
+    Runtime::new().unwrap().block_on(async {
+        start_stream(sender).await.unwrap();
+    });
 }

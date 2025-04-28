@@ -1,15 +1,9 @@
 mod utils;
 mod components;
 
-use components::{live_bgp_parser, router};
-use utils::thread_manager::{ThreadManager, Message};
+use components::{live_bgp_parser, router::Router};
+use utils::thread_manager::ThreadManager;
 use env_logger;
-use log::info;
-
-#[derive(Debug)]
-struct StringMessage(String);
-
-impl Message for StringMessage {}
 
 #[tokio::main]
 async fn main() {
@@ -19,25 +13,19 @@ async fn main() {
 
     let mut tm: ThreadManager = ThreadManager::new();
 
-    if let Some(id) = tm.message_bus.create_channel(0) {
-        for i in 0..10 {
-            info!("Sending message {}", i);
-            let tx = tm.message_bus.publish(id).unwrap();
-            tm.start_thread(move || {
-                tx.send(Box::new(StringMessage(format!("Message {}", i)))).unwrap();
-            });
-        }
-        
-        let rx = tm.message_bus.subscribe(id).unwrap();
-        tm.message_bus.stop(id);
-        
-        while let Ok(msg) = rx.recv() {
-            println!("Received message: {}", msg.cast::<StringMessage>().unwrap().0);
-        }
+    // Create a channel for the live BGP parser
+    if let Some(id) = tm.message_bus.create_channel(5) {
+        let tx = tm.message_bus.publish(id).unwrap();
+        tm.start_thread(move || live_bgp_parser::main(tx));
 
-        tm.join_all();        
-        info!("Done");
+        let rx = tm.message_bus.subscribe(id).unwrap();
+        tm.start_thread(move || Router::new(0, rx).start());
     }
 
+
+    // Set 1 sec timeout
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // tm.join_all();        
     return;
 }

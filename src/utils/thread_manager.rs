@@ -7,6 +7,9 @@ use log::error;
 use uuid::Uuid;
 
 pub trait Message: Any + Send + Sync + 'static {}
+pub type MessageSender = Arc<SyncSender<Box<dyn Message>>>;
+pub type MessageReceiver = Receiver<Box<dyn Message>>;
+
 
 impl dyn Message {
     pub fn cast<T: 'static>(&self) -> Option<&T> {
@@ -15,8 +18,8 @@ impl dyn Message {
 }
 
 pub struct MessageBus {
-    senders: HashMap<Uuid, Arc<SyncSender<Box<dyn Message>>>>,
-    receivers: HashMap<Uuid, Receiver<Box<dyn Message>>>
+    senders: HashMap<Uuid, MessageSender>,
+    receivers: HashMap<Uuid, MessageReceiver>
 }
 
 impl MessageBus {
@@ -46,7 +49,7 @@ impl MessageBus {
         return true;
     }
     
-    pub fn subscribe(&mut self, id: Uuid) -> Option<Receiver<Box<dyn Message>>> {
+    pub fn subscribe(&mut self, id: Uuid) -> Option<MessageReceiver> {
         if !self.receivers.contains_key(&id) {
             error!("Couldn't find a receiver with id {}", id);
             return None;
@@ -54,7 +57,7 @@ impl MessageBus {
         return Some(self.receivers.remove(&id).unwrap());
     }
     
-    pub fn publish(&self, id: Uuid) -> Option<Arc<SyncSender<Box<dyn Message>>>> {
+    pub fn publish(&self, id: Uuid) -> Option<MessageSender> {
         if !self.senders.contains_key(&id) {
             error!("Couldn't find a sender with id {}", id);
             return None;
@@ -83,7 +86,7 @@ impl ThreadManager {
 
     pub fn start_thread<F>(&mut self, function: F) -> Uuid
     where 
-        F: Fn() + Send + 'static,
+        F: FnOnce() + Send + 'static,
     {
         let id = Uuid::new_v4();
         let handle = thread::spawn(move || function());
