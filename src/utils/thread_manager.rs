@@ -69,6 +69,13 @@ impl MessageBus {
         self.senders.remove(&id);
         self.receivers.remove(&id);
     }
+
+    pub fn stop_all(&mut self) {
+        let ids: Vec<Uuid> = self.senders.keys().cloned().collect();
+        for id in ids {
+            self.stop(id);
+        }
+    }
 }
 
 pub struct ThreadManager {

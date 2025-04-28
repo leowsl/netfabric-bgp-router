@@ -5,8 +5,7 @@ use components::{live_bgp_parser, router::Router};
 use utils::thread_manager::ThreadManager;
 use env_logger;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     env_logger::init_from_env(
         env_logger::Env::default().default_filter_or("info")
     );
@@ -26,6 +25,9 @@ async fn main() {
     // Set 1 sec timeout
     std::thread::sleep(std::time::Duration::from_secs(1));
 
-    // tm.join_all();        
+    //TODO: Actually stop the threads
+
+    tm.message_bus.stop_all();
+    tm.join_all();        
     return;
 }
