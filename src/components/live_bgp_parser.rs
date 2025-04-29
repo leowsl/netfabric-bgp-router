@@ -1,12 +1,13 @@
-use reqwest::get;
+use crate::utils::thread_manager::{Message, MessageSender};
 use futures_util::StreamExt;
+use log::info;
+use reqwest::get;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use log::info;
-use crate::utils::thread_manager::{Message, MessageSender};
 use tokio::runtime::Runtime;
 
-static RIS_STREAM_URL: &str = "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
+static RIS_STREAM_URL: &str =
+    "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
 
 #[derive(Error, Debug)]
 pub enum BgpParserError {

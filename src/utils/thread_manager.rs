@@ -1,15 +1,14 @@
-use std::thread;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::collections::HashMap;
-use std::any::Any;
-use std::sync::Arc;
 use log::error;
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::Arc;
+use std::thread;
 use uuid::Uuid;
 
 pub trait Message: Any + Send + Sync + 'static {}
 pub type MessageSender = Arc<SyncSender<Box<dyn Message>>>;
 pub type MessageReceiver = Receiver<Box<dyn Message>>;
-
 
 impl dyn Message {
     pub fn cast<T: 'static>(&self) -> Option<&T> {
@@ -19,7 +18,7 @@ impl dyn Message {
 
 pub struct MessageBus {
     senders: HashMap<Uuid, MessageSender>,
-    receivers: HashMap<Uuid, MessageReceiver>
+    receivers: HashMap<Uuid, MessageReceiver>,
 }
 
 impl MessageBus {
@@ -48,7 +47,7 @@ impl MessageBus {
         self.receivers.insert(uuid, rx);
         return true;
     }
-    
+
     pub fn subscribe(&mut self, id: Uuid) -> Option<MessageReceiver> {
         if !self.receivers.contains_key(&id) {
             error!("Couldn't find a receiver with id {}", id);
@@ -56,7 +55,7 @@ impl MessageBus {
         }
         return Some(self.receivers.remove(&id).unwrap());
     }
-    
+
     pub fn publish(&self, id: Uuid) -> Option<MessageSender> {
         if !self.senders.contains_key(&id) {
             error!("Couldn't find a sender with id {}", id);
@@ -92,7 +91,7 @@ impl ThreadManager {
     }
 
     pub fn start_thread<F>(&mut self, function: F) -> Uuid
-    where 
+    where
         F: FnOnce() + Send + 'static,
     {
         let id = Uuid::new_v4();

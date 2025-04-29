@@ -1,14 +1,12 @@
-mod utils;
 mod components;
+mod utils;
 
 use components::{live_bgp_parser, router::Router};
-use utils::thread_manager::ThreadManager;
 use env_logger;
+use utils::thread_manager::ThreadManager;
 
 fn main() {
-    env_logger::init_from_env(
-        env_logger::Env::default().default_filter_or("info")
-    );
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let mut tm: ThreadManager = ThreadManager::new();
 
@@ -21,13 +19,12 @@ fn main() {
         tm.start_thread(move || Router::new(0, rx).start());
     }
 
-
     // Set 1 sec timeout
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     //TODO: Actually stop the threads
 
     tm.message_bus.stop_all();
-    tm.join_all();        
+    tm.join_all();
     return;
 }
