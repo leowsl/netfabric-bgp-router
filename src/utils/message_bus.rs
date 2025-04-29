@@ -1,3 +1,4 @@
+use crate::utils::thread_manager::ThreadManagerError;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -11,6 +12,8 @@ pub enum MessageBusError {
     ChannelExists(Uuid),
     #[error("Channel with id {0} not found")]
     ChannelNotFound(Uuid),
+    #[error("Thread manager error: {0}")]
+    ThreadManagerError(#[from] ThreadManagerError),
 }
 
 pub trait Message: Any + Send + Sync + 'static {}
