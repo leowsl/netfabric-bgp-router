@@ -11,12 +11,12 @@ fn main() {
     let mut tm: ThreadManager = ThreadManager::new();
 
     // Create a channel for the live BGP parser
-    if let Some(id) = tm.message_bus.create_channel(5) {
+    if let Ok(id) = tm.message_bus.create_channel(5) {
         let tx = tm.message_bus.publish(id).unwrap();
-        tm.start_thread(move || live_bgp_parser::main(tx));
+        let _ = tm.start_thread(move || live_bgp_parser::main(tx));
 
         let rx = tm.message_bus.subscribe(id).unwrap();
-        tm.start_thread(move || Router::new(0, rx).start());
+        let _ = tm.start_thread(move || Router::new(uuid::Uuid::new_v4(), rx).start());
     }
 
     // Set 1 sec timeout

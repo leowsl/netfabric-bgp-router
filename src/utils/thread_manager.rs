@@ -1,15 +1,30 @@
 use log::error;
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SendError, SyncSender};
 use std::sync::Arc;
 use std::thread;
+use thiserror::Error;
 use uuid::Uuid;
 
-pub trait Message: Any + Send + Sync + 'static {}
+#[derive(Error, Debug)]
+pub enum ThreadManagerError {
+    #[error("Thread operation failed: {0}")]
+    ThreadError(String),
+    #[error("Channel with id {0} already exists")]
+    ChannelExists(Uuid),
+    #[error("Channel with id {0} not found")]
+    ChannelNotFound(Uuid),
+    #[error("Failed to send message: {0}")]
+    SendError(#[from] SendError<Box<dyn Message>>),
+}
+
+pub type ThreadResult<T> = Result<T, ThreadManagerError>;
+
 pub type MessageSender = Arc<SyncSender<Box<dyn Message>>>;
 pub type MessageReceiver = Receiver<Box<dyn Message>>;
 
+pub trait Message: Any + Send + Sync + 'static {}
 impl dyn Message {
     pub fn cast<T: 'static>(&self) -> Option<&T> {
         (self as &dyn Any).downcast_ref::<T>()
@@ -29,39 +44,33 @@ impl MessageBus {
         }
     }
 
-    pub fn create_channel(&mut self, bound: usize) -> Option<Uuid> {
+    pub fn create_channel(&mut self, bound: usize) -> ThreadResult<Uuid> {
         let uuid = Uuid::new_v4();
-        if self.create_channel_with_uuid(bound, uuid) {
-            return Some(uuid);
-        }
-        return None;
+        self.create_channel_with_uuid(bound, uuid)?;
+        Ok(uuid)
     }
 
-    pub fn create_channel_with_uuid(&mut self, bound: usize, uuid: Uuid) -> bool {
+    pub fn create_channel_with_uuid(&mut self, bound: usize, uuid: Uuid) -> ThreadResult<()> {
         if self.senders.contains_key(&uuid) || self.receivers.contains_key(&uuid) {
-            error!("Channel with id {} already exists", uuid);
-            return false;
+            return Err(ThreadManagerError::ChannelExists(uuid));
         }
         let (tx, rx) = sync_channel::<Box<dyn Message>>(bound);
         self.senders.insert(uuid, Arc::new(tx));
         self.receivers.insert(uuid, rx);
-        return true;
+        Ok(())
     }
 
-    pub fn subscribe(&mut self, id: Uuid) -> Option<MessageReceiver> {
-        if !self.receivers.contains_key(&id) {
-            error!("Couldn't find a receiver with id {}", id);
-            return None;
-        }
-        return Some(self.receivers.remove(&id).unwrap());
+    pub fn subscribe(&mut self, id: Uuid) -> ThreadResult<MessageReceiver> {
+        self.receivers
+            .remove(&id)
+            .ok_or(ThreadManagerError::ChannelNotFound(id))
     }
 
-    pub fn publish(&self, id: Uuid) -> Option<MessageSender> {
-        if !self.senders.contains_key(&id) {
-            error!("Couldn't find a sender with id {}", id);
-            return None;
-        }
-        return self.senders.get(&id).cloned();
+    pub fn publish(&self, id: Uuid) -> ThreadResult<MessageSender> {
+        self.senders
+            .get(&id)
+            .cloned()
+            .ok_or(ThreadManagerError::ChannelNotFound(id))
     }
 
     pub fn stop(&mut self, id: Uuid) {
@@ -90,26 +99,34 @@ impl ThreadManager {
         }
     }
 
-    pub fn start_thread<F>(&mut self, function: F) -> Uuid
+    pub fn start_thread<F>(&mut self, function: F) -> ThreadResult<Uuid>
     where
         F: FnOnce() + Send + 'static,
     {
         let id = Uuid::new_v4();
         let handle = thread::spawn(move || function());
         self.thread_handles.insert(id, handle);
-        return id;
+        return Ok(id);
     }
 
-    pub fn join_thread(&mut self, id: Uuid) {
-        if let Some(handle) = self.thread_handles.remove(&id) {
-            handle.join().unwrap();
-        }
+    pub fn join_thread(&mut self, id: Uuid) -> ThreadResult<()> {
+        self.thread_handles
+            .remove(&id)
+            .ok_or(ThreadManagerError::ThreadError(format!(
+                "Thread {} not found",
+                id
+            )))?
+            .join()
+            .map_err(|_| {
+                ThreadManagerError::ThreadError(format!("Thread {} join operation failed", id))
+            })
     }
 
-    pub fn join_all(&mut self) {
+    pub fn join_all(&mut self) -> ThreadResult<()> {
         let uuids: Vec<Uuid> = self.thread_handles.keys().cloned().collect();
         for uuid in uuids {
-            self.join_thread(uuid);
+            self.join_thread(uuid)?;
         }
+        Ok(())
     }
 }
