@@ -8,23 +8,30 @@ use utils::thread_manager::ThreadManager;
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    let mut tm: ThreadManager = ThreadManager::new();
+    let mut tm = ThreadManager::new();
+    let (tx, rx) = if let Ok(mut message_bus) = tm.lock_message_bus() {
+        let channel_id = message_bus.create_channel(0).unwrap();
+        (
+            message_bus.publish(channel_id).unwrap(),
+            message_bus.subscribe(channel_id).unwrap(),
+        )
+    } else {
+        panic!("Failed to lock message bus");
+    };
 
-    // Create a channel for the live BGP parser
-    if let Ok(id) = tm.message_bus.create_channel(5) {
-        let tx = tm.message_bus.publish(id).unwrap();
-        let _ = tm.start_thread(move || live_bgp_parser::main(tx));
-
-        let rx = tm.message_bus.subscribe(id).unwrap();
-        let _ = tm.start_thread(move || Router::new(uuid::Uuid::new_v4(), rx).start());
-    }
+    let _ = tm.start_thread(move || live_bgp_parser::main(tx));
+    let _ = tm.start_thread(move || Router::new(uuid::Uuid::new_v4(), rx).start());
 
     // Set 1 sec timeout
     std::thread::sleep(std::time::Duration::from_secs(1));
 
-    //TODO: Actually stop the threads
+    tm.join_all().unwrap();
 
-    tm.message_bus.stop_all();
-    tm.join_all();
-    return;
+    if let Ok(mut message_bus) = tm.lock_message_bus() {
+        message_bus.stop_all();
+    } else {
+        panic!("Failed to lock message bus");
+    }
+
+    drop(tm);
 }

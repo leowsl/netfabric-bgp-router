@@ -1,15 +1,16 @@
 use log::info;
 
 use crate::components::live_bgp_parser::RisLiveMessage;
-use crate::utils::thread_manager::MessageReceiver;
+use crate::utils::message_bus::MessageReceiver;
+use uuid::Uuid;
 
 pub struct Router {
-    id: u8,
+    id: Uuid,
     receiver: MessageReceiver,
 }
 
 impl Router {
-    pub fn new(id: u8, receiver: MessageReceiver) -> Self {
+    pub fn new(id: Uuid, receiver: MessageReceiver) -> Self {
         Router { id, receiver }
     }
 

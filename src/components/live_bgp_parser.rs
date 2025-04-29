@@ -1,4 +1,4 @@
-use crate::utils::thread_manager::{Message, MessageSender};
+use crate::utils::message_bus::{Message, MessageSender};
 use futures_util::StreamExt;
 use log::info;
 use reqwest::get;
