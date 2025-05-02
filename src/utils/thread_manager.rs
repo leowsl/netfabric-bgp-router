@@ -37,14 +37,28 @@ impl ThreadManager {
         F: FnOnce() + Send + 'static,
     {
         let id = Uuid::new_v4();
-        let handle = thread::spawn(move || function());
+        let handle = thread::spawn(function);
         self.thread_handles
             .lock()
             .map_err(|e| {
                 ThreadManagerError::LockError(format!("Failed to lock thread handles: {}", e))
             })?
             .insert(id, handle);
-        return Ok(id);
+        Ok(id)
+    }
+
+    pub fn is_thread_running(&self, id: Uuid) -> ThreadResult<bool> {
+        let handles = self.thread_handles
+            .lock()
+            .map_err(|e| {
+                ThreadManagerError::LockError(format!("Failed to lock thread handles: {}", e))
+            })?;
+        
+        if let Some(handle) = handles.get(&id) {
+            Ok(!handle.is_finished())
+        } else {
+            Ok(false)
+        }
     }
 
     pub fn join_thread(&mut self, id: Uuid) -> ThreadResult<()> {
@@ -142,6 +156,21 @@ mod tests {
             })?;
             message_bus.stop(channel);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_thread_running_status() -> Result<(), ThreadManagerError> {
+        let mut thread_manager = ThreadManager::new();
+
+        let thread_id = thread_manager.start_thread(|| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        })?;
+
+        assert!(thread_manager.is_thread_running(thread_id)?);
+        thread_manager.join_thread(thread_id)?;
+        assert!(!thread_manager.is_thread_running(thread_id)?);
+
         Ok(())
     }
 }
