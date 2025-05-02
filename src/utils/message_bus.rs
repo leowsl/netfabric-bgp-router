@@ -14,6 +14,8 @@ pub enum MessageBusError {
     ChannelNotFound(Uuid),
     #[error("Thread manager error: {0}")]
     ThreadManagerError(#[from] ThreadManagerError),
+    #[error("Send error: {0}")]
+    SendError(#[from] std::sync::mpsc::SendError<Box<dyn Message>>),
 }
 
 pub trait Message: Any + Send + Sync + 'static {}
