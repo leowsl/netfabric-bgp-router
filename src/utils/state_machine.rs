@@ -78,3 +78,24 @@ impl StateMachine {
         let _ = self.sender.send(Box::new(StateMachineCommand::Stop));
     }
 }
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::thread_manager::ThreadManager;
+
+    #[test]
+    fn create_state_machine() {
+
+    }
+
+    fn start_state_machine() {
+
+    }
+
+    fn stop_state_machine() {
+
+    }
+}

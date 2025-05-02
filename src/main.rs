@@ -1,10 +1,6 @@
-mod components;
-mod utils;
-
-use components::{live_bgp_parser, router::Router};
+use netfabric_bgp::{ThreadManager, StateMachine, Router, live_bgp_parser};
 use env_logger;
-use utils::state_machine::StateMachine;
-use utils::thread_manager::ThreadManager;
+use uuid;
 
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));

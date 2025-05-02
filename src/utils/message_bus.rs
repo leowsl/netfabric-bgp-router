@@ -82,3 +82,62 @@ impl MessageBus {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_message_bus_creation() -> Result<(), MessageBusError> {
+        let _message_bus = MessageBus::new();
+        Ok(())
+    }
+    
+    #[test]
+    fn test_message_bus_channel_creation() -> Result<(), MessageBusError> {
+        let mut message_bus = MessageBus::new();
+        let _channel_id = message_bus.create_channel(0)?;
+        Ok(())
+    }
+    
+    #[test]
+    fn test_message_bus_publish_subscribe() -> Result<(), MessageBusError> {
+        let mut message_bus = MessageBus::new();
+        let channel_id = message_bus.create_channel(0)?;
+        let _publisher = message_bus.publish(channel_id)?;
+        let _subscriber = message_bus.subscribe(channel_id)?;
+        Ok(())
+    } 
+
+    #[test]
+    #[should_panic]
+    fn test_message_bus_publish_no_channel() {
+        let message_bus = MessageBus::new();
+        let id = Uuid::new_v4();
+        let _ = message_bus.publish(id).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_message_bus_subscribe_no_channel() {
+        let mut message_bus = MessageBus::new();
+        let id = Uuid::new_v4();
+        let _ = message_bus.subscribe(id).unwrap();
+    }
+
+    #[test]
+    fn test_message_bus_stop() -> Result<(), MessageBusError> {
+        let mut message_bus = MessageBus::new();
+        let channel_id = message_bus.create_channel(0)?;
+
+        assert!(message_bus.senders.get(&channel_id).is_some());
+        assert!(message_bus.receivers.get(&channel_id).is_some());  
+
+        message_bus.stop(channel_id);
+
+        assert!(message_bus.senders.get(&channel_id).is_none());
+        assert!(message_bus.receivers.get(&channel_id).is_none());  
+        Ok(())
+    }
+}

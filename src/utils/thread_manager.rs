@@ -86,3 +86,62 @@ impl ThreadManager {
         })
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_thread_manager_creation() -> Result<(), ThreadManagerError> {
+        let _thread_manager = ThreadManager::new();
+        Ok(())
+    }
+
+    #[test]
+    fn test_thread_manager_start_thread() -> Result<(), ThreadManagerError> {
+        let mut thread_manager = ThreadManager::new();
+
+        let x = Arc::new(Mutex::new(0));
+
+        let x_clone = x.clone();
+        let thread = thread_manager.start_thread(move || {
+            *x_clone.lock().unwrap() += 1;
+        })?;
+
+        thread_manager.join_thread(thread)?;
+
+        println!("x: {}", *x.lock().unwrap());
+        assert!(*x.lock().unwrap() == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_thread_manager_join_all() -> Result<(), ThreadManagerError> {
+        let mut thread_manager = ThreadManager::new();
+
+        let x: Arc<Mutex<i32>> = Arc::new(Mutex::new(0));
+        for _ in 0..10 {
+            let x_clone = x.clone();
+            thread_manager.start_thread(move || {
+                *x_clone.lock().unwrap() += 1;
+            })?;
+        }
+
+        thread_manager.join_all()?;
+        assert!(*x.lock().unwrap() == 10);
+        Ok(())
+    }    
+
+    #[test]
+    fn test_thread_manager_lock_message_bus() -> Result<(), ThreadManagerError> {
+        let thread_manager = ThreadManager::new();
+        if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
+            let channel = message_bus.create_channel(0).map_err(|e| {
+                ThreadManagerError::LockError(format!("Failed to create channel: {}", e))
+            })?;
+            message_bus.stop(channel);
+        }
+        Ok(())
+    }
+}
