@@ -1,13 +1,10 @@
 use crate::utils::message_bus::{Message, MessageBusError, MessageReceiver, MessageSender};
-use crate::utils::thread_manager::{ThreadManagerError, ThreadManager};
-use log::{info, error};
-use uuid::Uuid;
+use crate::utils::thread_manager::{ThreadManager, ThreadManagerError};
+use log::{error, info};
 use std::thread::sleep;
 use std::time::Duration;
 use thiserror::Error;
-use std::marker::PhantomData;
-
-
+use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum StateMachineError {
@@ -21,8 +18,14 @@ pub enum StateMachineError {
     NoResult(),
 }
 
-pub trait State: Send + Sync + 'static + Sized {
-    fn work(self) -> Option<Self>;
+pub enum StateTransition {
+    Continue,
+    Stop,
+    Transition(Box<dyn State>),
+}
+
+pub trait State: Send + Sync + 'static {
+    fn work(&mut self) -> StateTransition;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,63 +37,62 @@ pub enum InternalState {
 }
 impl Message for InternalState {}
 impl State for InternalState {
-    fn work(self) -> Option<Self> { Some(self) }
+    fn work(&mut self) -> StateTransition {
+        StateTransition::Continue
+    }
 }
 
-pub struct StateMachine<T: State> {
+pub struct StateMachine {
     command_sender: MessageSender,
     runner_thread_id: Uuid,
-    _phantom: PhantomData<T>,   // This is used to avoid the compiler warning about unused type parameters
-    // TODO: Add a result field
-    // result: Result<Box<dyn State>, StateMachineError>,
 }
 
-impl<T: State> StateMachine<T> {
-    pub fn new(thread_manager: &mut ThreadManager, state: T) -> Result<Self, StateMachineError> {
-        // Create a message bus channel for the state machine
+impl StateMachine {
+    pub fn new<T: State>(
+        thread_manager: &mut ThreadManager,
+        initial_state: T,
+    ) -> Result<Self, StateMachineError> {
         let mut message_bus = thread_manager.lock_message_bus()?;
         let channel_id = message_bus.create_channel(1)?;
         let sender = message_bus.publish(channel_id)?;
         let receiver = message_bus.subscribe(channel_id)?;
         drop(message_bus);
 
-        // Create the state machine
-        let state_machine = StateMachine::<T> {
+        let state_machine = StateMachine {
             command_sender: sender,
-            runner_thread_id: thread_manager.start_thread(move || Self::runner(receiver, state))?,
-            _phantom: PhantomData,
+            runner_thread_id: thread_manager
+                .start_thread(move || Self::runner(receiver, Box::new(initial_state)))?,
         };
 
         Ok(state_machine)
     }
 
-    fn runner(state_machine_command_receiver: MessageReceiver, initial_state: T) {
+    fn runner(state_machine_command_receiver: MessageReceiver, mut state: Box<dyn State>) {
         let mut internal_state = InternalState::Initialized;
-        let mut state: Option<T> = Some(initial_state);
 
-        // Loop
         while internal_state != InternalState::Stopped {
-            // Receive commands
             if let Ok(message) = state_machine_command_receiver.try_recv() {
                 if let Some(command) = message.cast::<InternalState>() {
                     internal_state = *command;
                 } else {
-                    error!("Received an invalid message type. Stopping StateMachine...");
+                    error!("Invalid message type. Stopping...");
                     internal_state = InternalState::Stopped;
                 }
             }
 
-            // Execute logic
             match internal_state {
-                InternalState::Running => {
-                    state = state.unwrap().work();
-                    if state.is_none() {
-                        info!("State machine is done. Stopping...");
+                InternalState::Running => match state.work() {
+                    StateTransition::Continue => {}
+                    StateTransition::Stop => {
+                        info!("State machine done. Stopping...");
                         internal_state = InternalState::Stopped;
                     }
-                }
+                    StateTransition::Transition(next_state) => {
+                        state = next_state;
+                    }
+                },
                 InternalState::Initialized | InternalState::Paused => sleep(Duration::from_secs(1)),
-                InternalState::Stopped => internal_state = InternalState::Stopped,
+                InternalState::Stopped => break,
             }
         }
     }
@@ -100,7 +102,8 @@ impl<T: State> StateMachine<T> {
     }
 
     fn send_command(&self, command: InternalState) -> Result<(), StateMachineError> {
-        self.command_sender.send(Box::new(command))
+        self.command_sender
+            .send(Box::new(command))
             .map_err(MessageBusError::SendError)?;
         Ok(())
     }
@@ -122,7 +125,7 @@ impl<T: State> StateMachine<T> {
     }
 
     pub fn get_state(&self) -> Uuid {
-        return self.runner_thread_id;
+        self.runner_thread_id
     }
 }
 
@@ -130,25 +133,26 @@ impl<T: State> StateMachine<T> {
 mod tests {
     use super::*;
     use crate::utils::thread_manager::ThreadManager;
-    
+
     struct SampleState {
         data: i32,
     }
 
     impl State for SampleState {
-        fn work(mut self) -> Option<Self> {
+        fn work(&mut self) -> StateTransition {
             if self.data > 0 {
                 self.data -= 1;
+                StateTransition::Continue
             } else {
                 info!("Counter is 0. Resetting to 10");
                 self.data = 10;
+                StateTransition::Continue
             }
-            Some(self)
         }
     }
 
     #[test]
-    fn create_state_machine(){
+    fn create_state_machine() {
         let mut thread_manager = ThreadManager::new();
         let start_state = SampleState { data: 10 };
         let state_machine = StateMachine::new(&mut thread_manager, start_state);
@@ -160,7 +164,7 @@ mod tests {
         let mut thread_manager = ThreadManager::new();
         let start_state = SampleState { data: 10 };
         let mut state_machine = StateMachine::new(&mut thread_manager, start_state)?;
-        return state_machine.start();
+        state_machine.start()
     }
 
     #[test]
@@ -169,15 +173,37 @@ mod tests {
         let start_state = SampleState { data: 10 };
         let mut state_machine = StateMachine::new(&mut thread_manager, start_state)?;
         state_machine.start()?;
-        return state_machine.stop();
+        state_machine.stop()
     }
 
     #[test]
-    fn test_state_machine_with_samplestate()  -> Result<(), StateMachineError> {
+    fn test_state_machine_with_samplestate() -> Result<(), StateMachineError> {
         let mut thread_manager = ThreadManager::new();
         let start_state = SampleState { data: 10 };
         let mut state_machine = StateMachine::new(&mut thread_manager, start_state)?;
         state_machine.start()?;
-        return state_machine.stop();
+        state_machine.stop()
+    }
+
+    #[test]
+    fn test_state_machine_with_samplestate_pause() -> Result<(), StateMachineError> {
+        let mut tm = ThreadManager::new();
+        let start_state = SampleState { data: 10 };
+        let mut state_machine = StateMachine::new(&mut tm, start_state)?;
+        let runner_thread_id = state_machine.get_runner_thread_id();
+
+        state_machine.start()?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        state_machine.pause()?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(tm.is_thread_running(runner_thread_id)?);
+        state_machine.resume()?;
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        state_machine.stop()?;
+
+        tm.join_thread(runner_thread_id).unwrap();
+        assert!(!tm.is_thread_running(runner_thread_id)?);
+
+        Ok(())
     }
 }
