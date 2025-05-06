@@ -1,28 +1,58 @@
-use netfabric_bgp::{ThreadManager, StateMachine, Router, live_bgp_parser};
 use env_logger;
 use log::info;
-use uuid;
+use netfabric_bgp::utils::state_machine::StateMachineError;
+use netfabric_bgp::{Router, StateMachine, ThreadManager};
+use uuid::Uuid;
+
+fn test_router(thread_manager: &mut ThreadManager) -> Result<(), StateMachineError> {
+    use netfabric_bgp::components::live_bgp_parser::RisLiveData;
+    use netfabric_bgp::components::live_bgp_parser::RisLiveMessage;
+
+    let mut router = Router::new(Uuid::new_v4());
+    let (tx, rx) = if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
+        let channel_id = message_bus.create_channel(0).unwrap();
+        (
+            message_bus.publish(channel_id).unwrap(),
+            message_bus.subscribe(channel_id).unwrap(),
+        )
+    } else {
+        panic!("Failed to lock message bus");
+    };
+    router.add_receiver(rx);
+
+    let mut state_machine = StateMachine::new(thread_manager, router)?;
+    state_machine.start()?;
+
+    tx.send(Box::new(RisLiveMessage {
+        msg_type: "RisLiveMessage".to_string(),
+        data: RisLiveData {
+            timestamp: 0.0,
+            peer: "192.168.1.1".to_string(),
+            peer_asn: "1".to_string(),
+            id: "test".to_string(),
+            host: "test".to_string(),
+            msg_type: "RisLiveMessage".to_string(),
+            path: None,
+            community: None,
+            origin: None,
+            announcements: None,
+            raw: None,
+            withdrawals: None,
+        },
+    }))
+    .map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;
+
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    state_machine.stop()?;
+    Ok(())
+}
 
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let mut tm = ThreadManager::new();
 
-    // Testing the state machine
-    let mut state_machine = StateMachine::new(&mut tm).unwrap();
-    let runner_thread_id = state_machine.get_runner_thread_id();
-    info!("Thread running is {}", tm.is_thread_running(runner_thread_id).unwrap());
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    let _ = state_machine.start();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    let _ = state_machine.pause();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    let _ = state_machine.resume();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    let _ = state_machine.stop();
-    info!("Thread running is {}", tm.is_thread_running(runner_thread_id).unwrap());
-    tm.join_thread(runner_thread_id).unwrap();
-    info!("Thread running is {}", tm.is_thread_running(runner_thread_id).unwrap());
+    test_router(&mut tm).unwrap();
 
     // Testing the message bus
     // let (tx, rx) = if let Ok(mut message_bus) = tm.lock_message_bus() {
