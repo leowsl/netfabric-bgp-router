@@ -7,3 +7,4 @@ pub use utils::state_machine::StateMachine;
 pub use utils::state_machine::State;
 pub use components::router::Router;
 pub use components::live_bgp_parser;
+pub use components::bgp;

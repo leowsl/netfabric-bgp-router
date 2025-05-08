@@ -172,7 +172,7 @@ impl From<std::sync::mpsc::TrySendError<Box<dyn Message>>> for BgpParserError {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Announcement {
     pub next_hop: String,
     pub prefixes: Vec<String>,
