@@ -26,6 +26,7 @@ pub enum StateTransition {
 
 pub trait State: Send + Sync + 'static {
     fn work(&mut self) -> StateTransition;
+    fn cleanup(&mut self) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +93,7 @@ impl StateMachine {
                     }
                 },
                 InternalState::Initialized | InternalState::Paused => sleep(Duration::from_secs(1)),
-                InternalState::Stopped => break,
+                InternalState::Stopped => state.cleanup(),
             }
         }
     }
