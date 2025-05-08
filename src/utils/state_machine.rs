@@ -68,7 +68,7 @@ impl StateMachine {
         Ok(state_machine)
     }
 
-    fn runner(state_machine_command_receiver: MessageReceiver, mut state: Box<dyn State>) {
+    fn runner(state_machine_command_receiver: MessageReceiver, mut state: Box<dyn State>) -> Box<dyn State> {
         let mut internal_state = InternalState::Initialized;
 
         while internal_state != InternalState::Stopped {
@@ -96,10 +96,7 @@ impl StateMachine {
                 InternalState::Stopped => state.cleanup(),
             }
         }
-    }
-
-    pub fn get_runner_thread_id(&self) -> Uuid {
-        self.runner_thread_id
+        return state;
     }
 
     fn send_command(&self, command: InternalState) -> Result<(), StateMachineError> {
@@ -128,6 +125,20 @@ impl StateMachine {
     pub fn get_state(&self) -> Uuid {
         self.runner_thread_id
     }
+
+    pub fn get_runner_thread_id(&self) -> Uuid {
+        self.runner_thread_id
+    }
+
+    pub fn get_runner_active(&self, thread_manager: &ThreadManager) -> bool {
+        thread_manager.is_thread_running(&self.runner_thread_id).is_ok()
+    }
+
+    pub fn get_final_state<T: State>(&self, thread_manager: &mut ThreadManager) -> Result<Box<T>, StateMachineError> {
+        thread_manager
+            .join_downcast::<Box<T>>(&self.runner_thread_id)
+            .map_err(StateMachineError::ThreadManagerError)
+    }
 }
 
 #[cfg(test)]
@@ -145,9 +156,8 @@ mod tests {
                 self.data -= 1;
                 StateTransition::Continue
             } else {
-                info!("Counter is 0. Resetting to 10");
-                self.data = 10;
-                StateTransition::Continue
+                info!("Counter is 0. Exiting...");
+                StateTransition::Stop
             }
         }
     }
@@ -169,18 +179,19 @@ mod tests {
     }
 
     #[test]
-    fn stop_state_machine() -> Result<(), StateMachineError> {
+    fn test_get_runner_active() -> Result<(), StateMachineError> {
         let mut thread_manager = ThreadManager::new();
-        let start_state = SampleState { data: 10 };
+        let start_state = SampleState { data: 0 };
         let mut state_machine = StateMachine::new(&mut thread_manager, start_state)?;
         state_machine.start()?;
-        state_machine.stop()
+        assert!(state_machine.get_runner_active(&thread_manager));
+        Ok(())
     }
 
     #[test]
-    fn test_state_machine_with_samplestate() -> Result<(), StateMachineError> {
+    fn stop_state_machine() -> Result<(), StateMachineError> {
         let mut thread_manager = ThreadManager::new();
-        let start_state = SampleState { data: 10 };
+        let start_state = SampleState { data: 10000000 };
         let mut state_machine = StateMachine::new(&mut thread_manager, start_state)?;
         state_machine.start()?;
         state_machine.stop()
@@ -189,7 +200,7 @@ mod tests {
     #[test]
     fn test_state_machine_with_samplestate_pause() -> Result<(), StateMachineError> {
         let mut tm = ThreadManager::new();
-        let start_state = SampleState { data: 10 };
+        let start_state = SampleState { data: 10000000 };
         let mut state_machine = StateMachine::new(&mut tm, start_state)?;
         let runner_thread_id = state_machine.get_runner_thread_id();
 
