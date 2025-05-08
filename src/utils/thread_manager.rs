@@ -51,7 +51,7 @@ impl ThreadManager {
         }
     }
 
-    pub fn join_thread(&mut self, id: &Uuid) -> ThreadResult<Box<dyn Any + Send>> {
+    pub fn join_thread<T: 'static>(&mut self, id: &Uuid) -> ThreadResult<T> {
         self.thread_handles
             .remove(id)
             .ok_or(ThreadManagerError::ThreadError(format!(
@@ -61,19 +61,14 @@ impl ThreadManager {
             .join()
             .map_err(|_| {
                 ThreadManagerError::ThreadError(format!("Thread {} join operation failed", id))
-            })
-    }
-
-    pub fn join_downcast<T: 'static>(&mut self, id: &Uuid) -> ThreadResult<T> {
-        let result = self.join_thread(id)?;
-        result.downcast::<T>()
+            })?
+            .downcast::<T>()
             .map(|boxed| *boxed)
             .map_err(|_| ThreadManagerError::ThreadError("Failed to downcast thread result".to_string()))
     }
 
     pub fn join_all(&mut self) -> ThreadResult<()> {
-        self
-            .thread_handles
+        self.thread_handles
             .drain()
             .for_each(|(_, handle)| {
                 handle.join().unwrap();
@@ -129,14 +124,10 @@ mod tests {
             x
         };
 
-        // Without downcasting
-        let thread1 = thread_manager.start_thread(x)?;
-        let result1 = thread_manager.join_thread(&thread1)?;
-        assert_eq!(result1.downcast_ref::<i32>().unwrap(), &10);
 
         // With downcasting
         let thread2 = thread_manager.start_thread(x)?;
-        let result2 = thread_manager.join_downcast::<i32>(&thread2)?;
+        let result2 = thread_manager.join_thread::<i32>(&thread2)?;
         assert_eq!(result2, 10);
         Ok(())
     }
