@@ -1,95 +1,160 @@
-use radix_trie::{Trie, TrieCommon, TrieKey};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, str::FromStr};
 use std::net::IpAddr;
+use crate::components::bgp::{Route, Advertisement};
+use log::info;
+use ip_network::IpNetwork;
+use ip_network_table::IpNetworkTable;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BgpTableKey(IpAddr);
-
-impl BgpTableKey {
-    pub fn new(addr: IpAddr) -> Self {
-        Self(addr)
-    }
+type RouterMask = u8;
+pub struct BgpRib {
+    treebitmap: IpNetworkTable<RibEntry>,
+    // router_mapping: HashMap<RouterMask, String>,
+    best_routes: HashMap<String, HashMap<RouterMask, Route>>,
 }
 
-impl TrieKey for BgpTableKey {
-    fn encode_bytes(&self) -> Vec<u8> {
-        match self.0 {
-            IpAddr::V4(addr) => addr.octets().to_vec(),
-            IpAddr::V6(addr) => addr.octets().to_vec(),
+impl BgpRib {
+    pub fn new() -> Self {
+        Self {
+            treebitmap: IpNetworkTable::new(),
+            // router_mapping: HashMap::new(),
+            best_routes: HashMap::new(),
         }
     }
+
+    pub fn export_to_file(&self, file_path: &str) {   
+        use std::fs::File;
+        use std::io::BufWriter;
+
+        let file = File::create(file_path).unwrap();
+        let writer = BufWriter::new(file);
+        let routes: Vec<(String, RibEntry)> = self
+            .treebitmap
+            .iter()
+            .map(|(network, value)| (network.to_string(), value.clone()))
+            .collect();
+        serde_json::to_writer_pretty(writer, &routes).unwrap();
+    }
+
+    pub fn import_from_file(file_path: &str) -> Self {
+        use std::fs::File;
+        use std::io::BufReader;
+        
+        let file: File = File::open(file_path).unwrap();
+        let reader = BufReader::new(file);
+        let routes: Vec<(String, RibEntry)> = serde_json::from_reader(reader).unwrap();
+        
+        let mut rib = Self::new();
+        for (prefix, entry) in routes {
+            if let Ok(network) = IpNetwork::from_str(&prefix) {
+                rib.treebitmap.insert(network, entry);
+            }
+        }
+        return rib;
+    }
+
+    pub fn get_routes_for_router(&self, address: IpAddr, router: &RouterMask) -> Vec<Route> {
+        return self
+            .treebitmap
+            .longest_match(address)
+            .map(|(_prefix, e)| 
+                e.routes.clone()
+            )
+            .unwrap_or(vec![]);
+    }
+
+    pub fn get_bestroute_for_router(&self, prefix: &str, router: &RouterMask) -> Option<Route> {
+        self
+            .best_routes
+            .get(prefix)
+            .and_then(|router_map| router_map
+                .get(router)
+                .cloned()
+            )
+    }
+
+    pub fn update_route(&mut self, route: Route) {
+        info!("Updating route: {:?}", route);
+        let prefix = IpNetwork::from_str(&route.prefix).unwrap();
+        let entry = RibEntry {
+            data: format!(
+                "next_hop: {:?}, as_path: {:?}, community: {:?}",
+                route.next_hop, route.as_path, route.community
+            ),
+            routes: vec![route]
+        };
+        self.treebitmap.insert(prefix, entry);
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RibEntry {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RibEntry {
     data: String,
+    routes: Vec<Route>,
 }
 
 impl RibEntry {
-    pub fn new(data: String) -> Self {
-        Self { data }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BgpTable {
-    trie: Trie<BgpTableKey, RibEntry>,
-}
-
-impl BgpTable {
-    pub fn new() -> Self {
-        Self { trie: Trie::new() }
-    }
-
-    pub fn insert(&mut self, key: BgpTableKey, entry: RibEntry) {
-        self.trie.insert(key, entry);
-    }
-
-    pub fn remove(&mut self, key: BgpTableKey) {
-        self.trie.remove(&key);
-    }
-
-    pub fn get(&self, key: BgpTableKey) -> Option<&RibEntry> {
-        self.trie.get(&key)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&BgpTableKey, &RibEntry)> {
-        self.trie.iter()
+    fn new(data: String, routes: Vec<Route>) -> Self {
+        Self { 
+            data,
+            routes,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
-    #[test]
-    fn test_insert() {
-        let mut table = BgpTable::new();
-        let key = BgpTableKey::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let entry = RibEntry::new("test".to_string());
 
-        table.insert(key, entry);
-        assert_eq!(table.iter().count(), 1);
+    #[test]
+    fn test_new() {
+        let rib = BgpRib::new();
+        assert!(rib.treebitmap.is_empty());
     }
 
     #[test]
-    fn test_remove() {
-        let mut table = BgpTable::new();
-        let key = BgpTableKey::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let entry = RibEntry::new("test".to_string());
+    fn test_export_import() {
+        use std::fs::remove_file;
+        let file_path = "test.json";
 
-        table.insert(key.clone(), entry);
-        table.remove(key);
-        assert_eq!(table.iter().count(), 0);
+        let mut rib1 = BgpRib::new();
+        rib1.update_route(Route {
+            prefix: "1.1.1.1/32".to_string(),
+            next_hop: "192.168.1.1".to_string(),
+            as_path: vec![1, 2, 3],
+            community: vec![vec![1, 2, 3]],
+        });
+        rib1.update_route(Route {
+            prefix: "2.2.0.0/32".to_string(),
+            next_hop: "192.168.1.1".to_string(),
+            as_path: vec![1, 4],
+            community: vec![],
+        });
+
+        rib1.export_to_file(file_path);
+        let rib2 = BgpRib::import_from_file(file_path);
+        
+        // Compare tables by converting to sorted vectors
+        let routes1: Vec<_> = rib1.treebitmap.iter().collect();
+        let routes2: Vec<_> = rib2.treebitmap.iter().collect();
+        assert_eq!(routes1, routes2);
+        
+        remove_file(file_path).unwrap();
     }
 
     #[test]
-    fn test_get() {
-        let mut table = BgpTable::new();
-        let key = BgpTableKey::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let entry = RibEntry::new("test".to_string());
+    fn test_get_routes_for_router() {
+        let mut rib = BgpRib::new();
+        let route_insert = Route {
+            prefix: "1.1.1.0/24".to_string(),
+            next_hop: "192.168.1.1".to_string(),
+            as_path: vec![1, 2, 3],
+            community: vec![vec![1, 2, 3]],
+        };
+        rib.update_route(route_insert.clone());
 
-        table.insert(key.clone(), entry.clone());
-        let res = table.get(key).unwrap();
-        assert_eq!(res, &entry);
+        let route_match = rib.get_routes_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &0);
+        assert_eq!(route_match.len(), 1);
+        assert_eq!(route_match[0], route_insert);
     }
 }
