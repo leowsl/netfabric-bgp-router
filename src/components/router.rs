@@ -1,4 +1,6 @@
+use crate::bgp::Advertisement;
 use crate::components::live_bgp_parser::RisLiveData;
+use crate::components::bgp_rib::BgpRib;
 use crate::utils::message_bus::MessageReceiver;
 use crate::utils::state_machine::{State, StateTransition};
 use log::info;
@@ -6,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub struct Router {
-    id: Uuid,
+    pub id: Uuid,
     receivers: Vec<Arc<Mutex<MessageReceiver>>>,
+    bgp_rib: Option<Arc<Mutex<BgpRib>>>,
 }
 
 impl Router {
@@ -15,11 +18,16 @@ impl Router {
         Router {
             id,
             receivers: Vec::new(),
+            bgp_rib: None,
         }
     }
 
     pub fn add_receiver(&mut self, receiver: MessageReceiver) {
         self.receivers.push(Arc::new(Mutex::new(receiver)));
+    }
+
+    pub fn set_rib(&mut self, rib: &Arc<Mutex<BgpRib>>) {
+        self.bgp_rib = Some(rib.clone());
     }
 }
 
@@ -29,10 +37,13 @@ impl State for Router {
             if let Ok(guard) = receiver.lock() {
                 if let Ok(msg) = guard.try_recv() {
                     if let Some(bgp_msg) = msg.cast::<RisLiveData>() {
-                        info!(
-                            "Received BGP message from {} (ASN: {}) - Type: {}",
-                            bgp_msg.peer, bgp_msg.peer_asn, bgp_msg.msg_type
-                        );
+                        if let Some(rib) = &self.bgp_rib {
+                            if let Ok(mut rib) = rib.lock() {
+                                let updates = Advertisement::from(bgp_msg).get_updates();
+                                for update in updates {
+                                    rib.update_route(update);
+                                }                            }
+                        }
                     }
                 }
             }

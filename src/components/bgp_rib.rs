@@ -22,6 +22,10 @@ impl BgpRib {
         }
     }
 
+    pub fn get_prefix_count(&self) -> (usize, usize) {
+        self.treebitmap.len()
+    }
+
     pub fn export_to_file(&self, file_path: &str) {   
         use std::fs::File;
         use std::io::BufWriter;
@@ -74,7 +78,6 @@ impl BgpRib {
     }
 
     pub fn update_route(&mut self, route: Route) {
-        info!("Updating route: {:?}", route);
         let prefix = IpNetwork::from_str(&route.prefix).unwrap();
         let entry = RibEntry {
             data: format!(
@@ -84,6 +87,17 @@ impl BgpRib {
             routes: vec![route]
         };
         self.treebitmap.insert(prefix, entry);
+    }
+}
+impl Clone for BgpRib {
+    fn clone(&self) -> Self {
+        let mut new_rib = BgpRib::new();
+        // Clone the treebitmap iteratively
+        for (network, entry) in self.treebitmap.iter() {
+            new_rib.treebitmap.insert(network, entry.clone());
+        }
+        new_rib.best_routes = self.best_routes.clone();
+        return new_rib;
     }
 }
 
@@ -113,6 +127,24 @@ mod tests {
     }
 
     #[test]
+    fn test_clone() {
+        let mut rib = BgpRib::new();
+        rib.update_route(Route {
+            prefix: "1.1.1.1/32".to_string(),
+            next_hop: "192.168.1.1".to_string(),
+            as_path: vec![1, 2, 3],
+            community: vec![vec![1, 2, 3]],
+        });
+        let rib_clone = rib.clone();
+
+        // Compare tables by converting to sorted vectors
+        let routes1: Vec<_> = rib.treebitmap.iter().collect();
+        let routes2: Vec<_> = rib_clone.treebitmap.iter().collect();
+        assert_eq!(routes1, routes2);
+        assert_eq!(rib.best_routes, rib_clone.best_routes);
+    }
+
+    #[test]
     fn test_export_import() {
         use std::fs::remove_file;
         let file_path = "test.json";
@@ -138,6 +170,7 @@ mod tests {
         let routes1: Vec<_> = rib1.treebitmap.iter().collect();
         let routes2: Vec<_> = rib2.treebitmap.iter().collect();
         assert_eq!(routes1, routes2);
+        assert_eq!(rib1.best_routes, rib2.best_routes);
         
         remove_file(file_path).unwrap();
     }

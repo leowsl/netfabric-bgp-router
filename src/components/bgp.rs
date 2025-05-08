@@ -1,5 +1,3 @@
-use std::default;
-
 use crate::components::live_bgp_parser::{RisLiveData, Announcement};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +74,25 @@ impl From<RisLiveData> for Advertisement {
             announcements: ris_live_data.announcements,
             raw: ris_live_data.raw,
             withdrawals: ris_live_data.withdrawals,
+        }
+    }
+}
+
+impl From<&RisLiveData> for Advertisement {
+    fn from(ris_live_data: &RisLiveData) -> Self {
+        Self {
+            timestamp: ris_live_data.timestamp,
+            peer: ris_live_data.peer.clone(),
+            peer_asn: ris_live_data.peer_asn.clone(),
+            id: ris_live_data.id.clone(),
+            host: ris_live_data.host.clone(),
+            msg_type: ris_live_data.msg_type.clone(),
+            path: ris_live_data.path.clone(),
+            community: ris_live_data.community.clone(),
+            origin: ris_live_data.origin.clone(),
+            announcements: ris_live_data.announcements.clone(),
+            raw: ris_live_data.raw.clone(),
+            withdrawals: ris_live_data.withdrawals.clone(),
         }
     }
 }
