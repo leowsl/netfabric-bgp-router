@@ -5,6 +5,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
+use std::any::Any;
 
 #[derive(Error, Debug)]
 pub enum StateMachineError {
@@ -24,7 +25,17 @@ pub enum StateTransition {
     Transition(Box<dyn State>),
 }
 
-pub trait State: Send + Sync + 'static {
+// Trait to allow downcasting of states
+pub trait Downcastable: Any + 'static {
+    fn as_any(&self) -> &dyn Any;
+}
+impl<T: Any + 'static> Downcastable for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+pub trait State: Send + Sync + 'static + Downcastable {
     fn work(&mut self) -> StateTransition;
     fn cleanup(&mut self) {}
 }
@@ -134,10 +145,15 @@ impl StateMachine {
         thread_manager.is_thread_running(&self.runner_thread_id).is_ok()
     }
 
-    pub fn get_final_state<T: State>(&self, thread_manager: &mut ThreadManager) -> Result<Box<T>, StateMachineError> {
-        thread_manager
-            .join_downcast::<Box<T>>(&self.runner_thread_id)
-            .map_err(StateMachineError::ThreadManagerError)
+    // every state is downcastable but not necessarily cloneable, so we require it here
+    pub fn get_final_state_cloned<T: State + Clone>(&self, thread_manager: &mut ThreadManager) -> Option<T> {
+        if let Ok(boxed_state) = thread_manager
+            .join_thread::<Box<dyn State>>(&self.runner_thread_id)
+            .map_err(StateMachineError::ThreadManagerError) 
+        {
+            return (*boxed_state).as_any().downcast_ref::<T>().cloned();
+        }
+        None
     }
 }
 
@@ -149,7 +165,6 @@ mod tests {
     struct SampleState {
         data: i32,
     }
-
     impl State for SampleState {
         fn work(&mut self) -> StateTransition {
             if self.data > 0 {
@@ -157,8 +172,17 @@ mod tests {
                 StateTransition::Continue
             } else {
                 info!("Counter is 0. Exiting...");
-                StateTransition::Stop
+                StateTransition::Transition(Box::new(ResultState { result: self.data }))
             }
+        }
+    }
+    #[derive(Clone)]
+    struct ResultState {
+        result: i32,
+    }
+    impl State for ResultState {
+        fn work(&mut self) -> StateTransition {
+            StateTransition::Stop
         }
     }
 
@@ -210,12 +234,27 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(tm.is_thread_running(&runner_thread_id)?);
         state_machine.resume()?;
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        std::thread::sleep(std::time::Duration::from_millis(100));
         state_machine.stop()?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        tm.join_thread(&runner_thread_id).unwrap();
         assert!(!tm.is_thread_running(&runner_thread_id)?);
+        Ok(())
+    }
 
+    #[test]
+    fn test_state_machine_with_result() -> Result<(), StateMachineError> {
+        let mut tm = ThreadManager::new();
+        let start_state = SampleState { data: 1000 };
+        let mut state_machine = StateMachine::new(&mut tm, start_state)?;
+        let runner_thread_id = state_machine.get_runner_thread_id();
+
+        state_machine.start()?;
+        assert!(tm.is_thread_running(&runner_thread_id)?);
+        
+        // Result waits for the state machine to terminate
+        let result_state = state_machine.get_final_state_cloned::<ResultState>(&mut tm).unwrap();
+        assert_eq!(result_state.result, 0);
         Ok(())
     }
 }
