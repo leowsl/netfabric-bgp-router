@@ -1,110 +1,13 @@
 use env_logger;
 use log::info;
-use netfabric_bgp::utils::state_machine::StateMachineError;
-use netfabric_bgp::{Router, StateMachine, ThreadManager};
-use uuid::Uuid;
-
-fn test_live_bgp_parser(thread_manager: &mut ThreadManager) -> Result<(), StateMachineError> {
-    use netfabric_bgp::components::live_bgp_parser::LiveBgpParser;
-    use netfabric_bgp::utils::thread_manager::ThreadManagerError;
-
-    // Create channel for BGP messages
-    let (tx, rx) = if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
-        let channel_id = message_bus.create_channel(10000).unwrap();
-        (
-            message_bus.publish(channel_id)?,
-            message_bus.subscribe(channel_id)?,
-        )
-    } else {
-        return Err(StateMachineError::ThreadManagerError(ThreadManagerError::LockError("Failed to lock message bus.".to_string())));
-    };
-
-    // Create and start router
-    let mut router = Router::new(Uuid::new_v4());
-    router.add_receiver(rx);
-    let mut router_state_machine = StateMachine::new(thread_manager, router)?;
-    router_state_machine.start()?;
-
-    // Create and start BGP parser
-    let live_bgp_parser = LiveBgpParser::new(tx);
-    let mut parser_state_machine = StateMachine::new(thread_manager, live_bgp_parser)?;
-    parser_state_machine.start()?;
-
-    // Let it run for a while
-    std::thread::sleep(std::time::Duration::from_secs(5));
-
-    // Stop both state machines
-    parser_state_machine.stop()?;
-    router_state_machine.stop()?;
-    Ok(())
-}
-
-fn test_router(thread_manager: &mut ThreadManager) -> Result<(), StateMachineError> {
-    use netfabric_bgp::components::live_bgp_parser::RisLiveData;
-    use netfabric_bgp::components::live_bgp_parser::RisLiveMessage;
-
-    let mut router = Router::new(Uuid::new_v4());
-    let (tx, rx) = if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
-        let channel_id = message_bus.create_channel(1000).unwrap();
-        (
-            message_bus.publish(channel_id).unwrap(),
-            message_bus.subscribe(channel_id).unwrap(),
-        )
-    } else {
-        panic!("Failed to lock message bus");
-    };
-    router.add_receiver(rx);
-
-    let mut state_machine = StateMachine::new(thread_manager, router)?;
-    state_machine.start()?;
-
-    tx.send(Box::new(RisLiveMessage {
-        msg_type: "RisLiveMessage".to_string(),
-        data: RisLiveData {
-            timestamp: 0.0,
-            peer: "192.168.1.1".to_string(),
-            peer_asn: "1".to_string(),
-            id: "test".to_string(),
-            host: "test".to_string(),
-            msg_type: "RisLiveMessage".to_string(),
-            path: None,
-            community: None,
-            origin: None,
-            announcements: None,
-            raw: None,
-            withdrawals: None,
-        },
-    }))
-    .map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;
-
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    state_machine.stop()?;
-    Ok(())
-}
+use netfabric_bgp::ThreadManager;
 
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-
     let mut tm = ThreadManager::new();
 
-    // let _ = test_router(&mut tm);
-    let _ = test_live_bgp_parser(&mut tm);
-
-    // Testing the message bus
-    // let (tx, rx) = if let Ok(mut message_bus) = tm.lock_message_bus() {
-    //     let channel_id = message_bus.create_channel(0).unwrap();
-    //     (
-    //         message_bus.publish(channel_id).unwrap(),
-    //         message_bus.subscribe(channel_id).unwrap(),
-    //     )
-    // } else {
-    //     panic!("Failed to lock message bus");
-    // };
-
-    // let _ = tm.start_thread(move || live_bgp_parser::main(tx));
-    // let _ = tm.start_thread(move || Router::new(uuid::Uuid::new_v4(), rx).start());
-
-    // Set 1 sec timeout
+    // Clean up
+    info!("Stopping");
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     tm.join_all().unwrap();
