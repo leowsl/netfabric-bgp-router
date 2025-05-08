@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use thiserror::Error;
 use uuid::Uuid;
+use std::any::Any;
 
 #[derive(Error, Debug)]
 pub enum ThreadManagerError {
@@ -20,54 +21,39 @@ pub enum ThreadManagerError {
 pub type ThreadResult<T> = Result<T, ThreadManagerError>;
 
 pub struct ThreadManager {
-    thread_handles: Arc<Mutex<HashMap<Uuid, thread::JoinHandle<()>>>>,
+    thread_handles: HashMap<Uuid, thread::JoinHandle<Box<dyn Any + Send>>>,
     message_bus: Arc<Mutex<MessageBus>>,
 }
 
 impl ThreadManager {
     pub fn new() -> Self {
         ThreadManager {
-            thread_handles: Arc::new(Mutex::new(HashMap::new())),
+            thread_handles: HashMap::new(),
             message_bus: Arc::new(Mutex::new(MessageBus::new())),
         }
     }
 
-    pub fn start_thread<F>(&mut self, function: F) -> ThreadResult<Uuid>
+    pub fn start_thread<F, T>(&mut self, function: F) -> ThreadResult<Uuid>
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
     {
         let id = Uuid::new_v4();
-        let handle = thread::spawn(function);
-        self.thread_handles
-            .lock()
-            .map_err(|e| {
-                ThreadManagerError::LockError(format!("Failed to lock thread handles: {}", e))
-            })?
-            .insert(id, handle);
+        let handle = thread::spawn(move || Box::new(function()) as Box<dyn Any + Send>);
+        self.thread_handles.insert(id, handle);
         Ok(id)
     }
 
-    pub fn is_thread_running(&self, id: Uuid) -> ThreadResult<bool> {
-        let handles = self.thread_handles
-            .lock()
-            .map_err(|e| {
-                ThreadManagerError::LockError(format!("Failed to lock thread handles: {}", e))
-            })?;
-        
-        if let Some(handle) = handles.get(&id) {
-            Ok(!handle.is_finished())
-        } else {
-            Ok(false)
+    pub fn is_thread_running(&self, id: &Uuid) -> ThreadResult<bool> {
+        match self.thread_handles.get(id) {
+            Some(handle) => Ok(!handle.is_finished()),
+            None => Ok(false),
         }
     }
 
-    pub fn join_thread(&mut self, id: Uuid) -> ThreadResult<()> {
+    pub fn join_thread(&mut self, id: &Uuid) -> ThreadResult<Box<dyn Any + Send>> {
         self.thread_handles
-            .lock()
-            .map_err(|e| {
-                ThreadManagerError::LockError(format!("Failed to lock thread handles: {}", e))
-            })?
-            .remove(&id)
+            .remove(id)
             .ok_or(ThreadManagerError::ThreadError(format!(
                 "Thread {} not found",
                 id
@@ -78,19 +64,20 @@ impl ThreadManager {
             })
     }
 
+    pub fn join_downcast<T: 'static>(&mut self, id: &Uuid) -> ThreadResult<T> {
+        let result = self.join_thread(id)?;
+        result.downcast::<T>()
+            .map(|boxed| *boxed)
+            .map_err(|_| ThreadManagerError::ThreadError("Failed to downcast thread result".to_string()))
+    }
+
     pub fn join_all(&mut self) -> ThreadResult<()> {
-        let uuids: Vec<Uuid> = self
+        self
             .thread_handles
-            .lock()
-            .map_err(|e| {
-                ThreadManagerError::LockError(format!("Failed to lock thread handles: {}", e))
-            })?
-            .keys()
-            .cloned()
-            .collect();
-        for uuid in uuids {
-            self.join_thread(uuid)?;
-        }
+            .drain()
+            .for_each(|(_, handle)| {
+                handle.join().unwrap();
+            });
         Ok(())
     }
 
@@ -123,10 +110,34 @@ mod tests {
             *x_clone.lock().unwrap() += 1;
         })?;
 
-        thread_manager.join_thread(thread)?;
+        thread_manager.join_thread(&thread)?;
 
         println!("x: {}", *x.lock().unwrap());
         assert!(*x.lock().unwrap() == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_thread_manager_start_thread_with_result() -> Result<(), ThreadManagerError> {
+        let mut thread_manager = ThreadManager::new();
+
+        let x = || -> i32 {
+            let mut x = 1;
+            while x < 10 {
+                x += 1;
+            }
+            x
+        };
+
+        // Without downcasting
+        let thread1 = thread_manager.start_thread(x)?;
+        let result1 = thread_manager.join_thread(&thread1)?;
+        assert_eq!(result1.downcast_ref::<i32>().unwrap(), &10);
+
+        // With downcasting
+        let thread2 = thread_manager.start_thread(x)?;
+        let result2 = thread_manager.join_downcast::<i32>(&thread2)?;
+        assert_eq!(result2, 10);
         Ok(())
     }
 
@@ -167,9 +178,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         })?;
 
-        assert!(thread_manager.is_thread_running(thread_id)?);
-        thread_manager.join_thread(thread_id)?;
-        assert!(!thread_manager.is_thread_running(thread_id)?);
+        assert!(thread_manager.is_thread_running(&thread_id)?);
+        thread_manager.join_thread(&thread_id)?;
+        assert!(!thread_manager.is_thread_running(&thread_id)?);
 
         Ok(())
     }

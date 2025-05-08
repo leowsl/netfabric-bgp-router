@@ -69,8 +69,8 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
     let parser_thread_id = parser_state_machine.get_runner_thread_id();
     parser_state_machine.start()?;
 
-    assert!(thread_manager.is_thread_running(router_thread_id)?, "Router state machine should be running");
-    assert!(thread_manager.is_thread_running(parser_thread_id)?, "BGP parser state machine should be running");
+    assert!(thread_manager.is_thread_running(&router_thread_id)?, "Router state machine should be running");
+    assert!(thread_manager.is_thread_running(&parser_thread_id)?, "BGP parser state machine should be running");
 
     std::thread::sleep(std::time::Duration::from_secs(5));
 
@@ -80,8 +80,8 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    assert!(!thread_manager.is_thread_running(router_thread_id)?, "Router state machine should be stopped");
-    assert!(!thread_manager.is_thread_running(parser_thread_id)?, "BGP parser state machine should be stopped");
+    assert!(!thread_manager.is_thread_running(&router_thread_id)?, "Router state machine should be stopped");
+    assert!(!thread_manager.is_thread_running(&parser_thread_id)?, "BGP parser state machine should be stopped");
     
     Ok(())
 }
@@ -110,7 +110,7 @@ fn test_router() -> Result<(), StateMachineError> {
     let thread_id = state_machine.get_runner_thread_id();
     state_machine.start()?;
 
-    assert!(thread_manager.is_thread_running(thread_id)?, "Router state machine should be running");
+    assert!(thread_manager.is_thread_running(&thread_id)?, "Router state machine should be running");
 
     let test_message = RisLiveMessage {
         msg_type: "RisLiveMessage".to_string(),
@@ -139,7 +139,7 @@ fn test_router() -> Result<(), StateMachineError> {
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    assert!(!thread_manager.is_thread_running(thread_id)?, "Router state machine should be stopped");
+    assert!(!thread_manager.is_thread_running(&thread_id)?, "Router state machine should be stopped");
     
     Ok(())
 }

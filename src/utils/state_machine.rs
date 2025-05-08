@@ -197,13 +197,13 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         state_machine.pause()?;
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(tm.is_thread_running(runner_thread_id)?);
+        assert!(tm.is_thread_running(&runner_thread_id)?);
         state_machine.resume()?;
         std::thread::sleep(std::time::Duration::from_millis(1000));
         state_machine.stop()?;
 
-        tm.join_thread(runner_thread_id).unwrap();
-        assert!(!tm.is_thread_running(runner_thread_id)?);
+        tm.join_thread(&runner_thread_id).unwrap();
+        assert!(!tm.is_thread_running(&runner_thread_id)?);
 
         Ok(())
     }
