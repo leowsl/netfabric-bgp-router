@@ -82,6 +82,11 @@ impl BgpRib {
         };
         self.treebitmap.insert(prefix, entry);
     }
+    pub fn update_routes(&mut self, routes: Vec<Route>) {
+        for route in routes {
+            self.update_route(route);
+        }
+    }
 }
 impl Clone for BgpRib {
     fn clone(&self) -> Self {
