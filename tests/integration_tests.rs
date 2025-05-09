@@ -51,7 +51,7 @@ fn test_message_bus() -> Result<(), String> {
 #[test]
 fn test_live_bgp_parser() -> Result<(), StateMachineError> {
     use netfabric_bgp::modules::live_bgp_parser::LiveBgpParser;
-    use netfabric_bgp::modules::router::Router;
+    use netfabric_bgp::modules::router::{Router, RouterChannel, RouterConnection};
     use netfabric_bgp::utils::thread_manager::ThreadManagerError;
 
     let mut thread_manager = ThreadManager::new();
@@ -71,7 +71,11 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
 
     // Create and start router
     let mut router = Router::new(Uuid::new_v4());
-    router.add_receiver(rx);
+    let router_connection = RouterConnection {
+        channel: RouterChannel::Inbound(rx),
+        filters: Vec::new(),
+    };
+    router.add_connection(router_connection);
     let mut router_state_machine = StateMachine::new(&mut thread_manager, router)?;
     let router_thread_id = router_state_machine.get_runner_thread_id();
     router_state_machine.start()?;
@@ -114,7 +118,7 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
 #[test]
 fn test_router() -> Result<(), StateMachineError> {
     use netfabric_bgp::components::ris_live_data::{RisLiveData, RisLiveMessage};
-    use netfabric_bgp::modules::router::Router;
+    use netfabric_bgp::modules::router::{Router, RouterChannel, RouterConnection};
 
     let mut thread_manager = ThreadManager::new();
 
@@ -128,7 +132,11 @@ fn test_router() -> Result<(), StateMachineError> {
     } else {
         panic!("Failed to lock message bus");
     };
-    router.add_receiver(rx);
+    let router_connection = RouterConnection {
+        channel: RouterChannel::Inbound(rx),
+        filters: Vec::new(),
+    };
+    router.add_connection(router_connection);
 
     let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
     let thread_id = state_machine.get_runner_thread_id();
@@ -147,7 +155,7 @@ fn test_router() -> Result<(), StateMachineError> {
             peer_asn: "1".to_string(),
             id: "test".to_string(),
             host: "test".to_string(),
-            msg_type: "RisLiveMessage".to_string(),
+            msg_type: AdvertisementType::Update,
             path: None,
             community: None,
             origin: None,
@@ -188,7 +196,7 @@ fn test_router() -> Result<(), StateMachineError> {
 fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), StateMachineError> {
     use netfabric_bgp::modules::live_bgp_parser::LiveBgpParser;
     use netfabric_bgp::modules::network::NetworkManager;
-    use netfabric_bgp::modules::router::Router;
+    use netfabric_bgp::modules::router::{Router, RouterChannel, RouterConnection};
     use netfabric_bgp::utils::state_machine::StateMachine;
     use uuid::Uuid;
 
@@ -213,7 +221,11 @@ fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), StateM
 
     // Router state machine
     let mut router = Router::new(Uuid::new_v4());
-    router.add_receiver(bgp_parser_rx);
+    let router_connection = RouterConnection {
+        channel: RouterChannel::Inbound(bgp_parser_rx),
+        filters: Vec::new(),
+    };
+    router.add_connection(router_connection);
 
     // Create and start network
     let mut network_manager = NetworkManager::new(thread_manager);

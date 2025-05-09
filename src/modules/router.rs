@@ -1,14 +1,28 @@
 use crate::components::advertisment::Advertisement;
 use crate::components::bgp_rib::BgpRib;
-use crate::components::ris_live_data::RisLiveData;
-use crate::utils::message_bus::MessageReceiver;
+use crate::utils::message_bus::MessageBusError;
+use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::state_machine::{State, StateTransition};
-use std::sync::{Arc, Mutex};
+use log::warn;
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use thiserror::Error;
 use uuid::Uuid;
+
+pub enum RouterChannel {
+    Inbound(MessageReceiver),
+    Outbound(MessageSender),
+}
+pub trait Filter<T>: 'static + Send + Sync {
+    fn filter(&self, route: &T) -> bool;
+}
+pub struct RouterConnection {
+    pub channel: RouterChannel,
+    pub filters: Vec<Box<dyn Filter<Advertisement>>>,
+}
 
 pub struct Router {
     pub id: Uuid,
-    receivers: Vec<Arc<Mutex<MessageReceiver>>>,
+    connections: Vec<Arc<Mutex<RouterConnection>>>,
     bgp_rib: Option<Arc<Mutex<BgpRib>>>,
 }
 
@@ -16,39 +30,98 @@ impl Router {
     pub fn new(id: Uuid) -> Self {
         Router {
             id,
-            receivers: Vec::new(),
+            connections: Vec::new(),
             bgp_rib: None,
         }
     }
 
-    pub fn add_receiver(&mut self, receiver: MessageReceiver) {
-        self.receivers.push(Arc::new(Mutex::new(receiver)));
+    pub fn add_connection(&mut self, connection: RouterConnection) {
+        self.connections.push(Arc::new(Mutex::new(connection)));
     }
 
     pub fn set_rib(&mut self, rib: &Arc<Mutex<BgpRib>>) {
         self.bgp_rib = Some(rib.clone());
     }
-}
 
-impl State for Router {
-    fn work(&mut self) -> StateTransition {
-        for receiver in &self.receivers {
-            if let Ok(guard) = receiver.lock() {
-                if let Ok(msg) = guard.try_recv() {
-                    if let Some(bgp_msg) = msg.cast::<RisLiveData>() {
-                        if let Some(rib) = &self.bgp_rib {
-                            if let Ok(mut rib) = rib.lock() {
-                                let updates = Advertisement::from(bgp_msg).get_updates();
-                                for update in updates {
-                                    rib.update_route(update);
-                                }
-                            }
+    pub fn process_incoming_advertisements(&mut self) -> Result<(), RouterError> {
+        let rib_mutex = self
+            .bgp_rib
+            .as_ref()
+            .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?;
+        for connection_mutex in &self.connections {
+            match &connection_mutex.try_lock()?.channel {
+                RouterChannel::Outbound(_) => continue,
+                RouterChannel::Inbound(receiver) => {
+                    while let Ok(msg) = receiver.try_recv() {
+                        if let Some(advertisement) = msg.cast::<Advertisement>() {
+                            rib_mutex
+                                .try_lock()?
+                                .update_routes(advertisement.get_routes());
+                                //TODO apply filters
                         }
                     }
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn process_outgoing_advertisements(&mut self) -> Result<(), RouterError> {
+        // TODO: Implement this
+        Ok(())
+    }
+}
+impl State for Router {
+    fn work(&mut self) -> StateTransition {
+        // Process incoming advertisements
+        match self.process_incoming_advertisements() {
+            Ok(_) => (),
+            Err(e) => {
+                warn!("Error processing incoming advertisements: {}", e);
+                return StateTransition::Continue;
+            }
+        }
+
+        // Process outgoing advertisements
+        match self.process_outgoing_advertisements() {
+            Ok(_) => (),
+            Err(e) => {
+                warn!("Error processing outgoing advertisements: {}", e);
+                return StateTransition::Continue;
+            }
+        }
+
         StateTransition::Continue
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum RouterError {
+    #[error("Message bus error: {0}")]
+    MessageBusError(String),
+    #[error("Failed to lock resource: {0}")]
+    LockError(String),
+    #[error("Failed to process message: {0}")]
+    ProcessError(String),
+    #[error("RIB is not set for router {0}")]
+    RibNotSet(String),
+}
+
+impl From<MessageBusError> for RouterError {
+    fn from(err: MessageBusError) -> Self {
+        RouterError::MessageBusError(err.to_string())
+    }
+}
+
+impl<T> From<PoisonError<T>> for RouterError {
+    fn from(err: PoisonError<T>) -> Self {
+        RouterError::LockError(err.to_string())
+    }
+}
+
+impl<T> From<TryLockError<T>> for RouterError {
+    fn from(err: TryLockError<T>) -> Self {
+        RouterError::LockError(err.to_string())
     }
 }
 
@@ -66,14 +139,18 @@ mod tests {
     }
 
     #[test]
-    fn test_router_add_receiver() -> Result<(), MessageBusError> {
+    fn test_router_add_connection() -> Result<(), MessageBusError> {
         let mut message_bus: MessageBus = MessageBus::new();
         let channel_id = message_bus.create_channel(0)?;
         let receiver = message_bus.subscribe(channel_id)?;
+        let connection = RouterConnection {
+            channel: RouterChannel::Inbound(receiver),
+            filters: Vec::new(),
+        };
         let mut router = Router::new(Uuid::new_v4());
 
-        router.add_receiver(receiver);
-        assert!(router.receivers.len() == 1);
+        router.add_connection(connection);
+        assert!(router.connections.len() == 1);
         Ok(())
     }
 
@@ -97,10 +174,19 @@ mod tests {
         let mut router = Router::new(Uuid::new_v4());
         let channel_id = Uuid::new_v4();
 
+        // Create and set up BGP RIB
+        let bgp_rib = Arc::new(Mutex::new(BgpRib::new()));
+        router.set_rib(&bgp_rib);
+
         if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
             message_bus.create_channel_with_uuid(0, channel_id)?;
-            let receiver = message_bus.subscribe(channel_id)?;
-            router.add_receiver(receiver);
+            let receiver: std::sync::mpsc::Receiver<Box<dyn Message + 'static>> =
+                message_bus.subscribe(channel_id)?;
+            let router_connection = RouterConnection {
+                channel: RouterChannel::Inbound(receiver),
+                filters: Vec::new(),
+            };
+            router.add_connection(router_connection);
         }
 
         let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
