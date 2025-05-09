@@ -90,6 +90,7 @@ mod tests {
 
     #[test]
     fn test_router_state_work() -> Result<(), StateMachineError> {
+        use crate::components::advertisment::AdvertisementType;
         use crate::components::ris_live_data::{RisLiveData, RisLiveMessage};
 
         let mut thread_manager: ThreadManager = ThreadManager::new();
@@ -116,13 +117,23 @@ mod tests {
                         peer_asn: "1".to_string(),
                         id: "test".to_string(),
                         host: "test".to_string(),
-                        msg_type: "RisLiveMessage".to_string(),
+                        msg_type: AdvertisementType::Update,
                         path: None,
                         community: None,
                         origin: None,
                         announcements: None,
                         raw: None,
                         withdrawals: None,
+                        aggregator: None,
+                        asn: None,
+                        capabilities: None,
+                        med: None,
+                        direction: None,
+                        version: None,
+                        hold_time: None,
+                        router_id: None,
+                        notification: None,
+                        state: None,
                     },
                 }))
                 .map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;

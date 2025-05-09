@@ -115,6 +115,7 @@ impl RibEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::route::PathElement;
 
     #[test]
     fn test_new() {
@@ -128,7 +129,11 @@ mod tests {
         rib.update_route(Route {
             prefix: "1.1.1.1/32".to_string(),
             next_hop: "192.168.1.1".to_string(),
-            as_path: vec![1, 2, 3],
+            as_path: vec![
+                PathElement::ASN(1),
+                PathElement::ASN(2),
+                PathElement::ASN(3),
+            ],
             community: vec![vec![1, 2, 3]],
         });
         let rib_clone = rib.clone();
@@ -149,13 +154,17 @@ mod tests {
         rib1.update_route(Route {
             prefix: "1.1.1.1/32".to_string(),
             next_hop: "192.168.1.1".to_string(),
-            as_path: vec![1, 2, 3],
+            as_path: vec![
+                PathElement::ASN(1),
+                PathElement::ASN(2),
+                PathElement::ASN(3),
+            ],
             community: vec![vec![1, 2, 3]],
         });
         rib1.update_route(Route {
             prefix: "2.2.0.0/32".to_string(),
             next_hop: "192.168.1.1".to_string(),
-            as_path: vec![1, 4],
+            as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
             community: vec![],
         });
 
@@ -177,7 +186,11 @@ mod tests {
         let route_insert = Route {
             prefix: "1.1.1.0/24".to_string(),
             next_hop: "192.168.1.1".to_string(),
-            as_path: vec![1, 2, 3],
+            as_path: vec![
+                PathElement::ASN(1),
+                PathElement::ASN(2),
+                PathElement::ASN(3),
+            ],
             community: vec![vec![1, 2, 3]],
         };
         rib.update_route(route_insert.clone());

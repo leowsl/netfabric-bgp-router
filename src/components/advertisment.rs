@@ -1,6 +1,39 @@
-use serde::{Deserialize, Serialize};
-use crate::components::route::Route;
 use crate::components::ris_live_data::{Announcement, RisLiveData};
+use crate::components::route::{Route, Path};
+use crate::utils::message_bus::Message;
+use log::warn;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "String")]
+pub enum AdvertisementType {
+    Unknown,
+    Update,
+    Keepalive,
+    Open,
+    Notification,
+    RisPeerState,
+}
+impl Default for AdvertisementType {
+    fn default() -> Self {
+        AdvertisementType::Unknown
+    }
+}
+impl From<String> for AdvertisementType {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "UPDATE" => AdvertisementType::Update,
+            "KEEPALIVE" => AdvertisementType::Keepalive,
+            "OPEN" => AdvertisementType::Open,
+            "NOTIFICATION" => AdvertisementType::Notification,
+            "RIS_PEER_STATE" | "STATE" => AdvertisementType::RisPeerState,
+            _ => {
+                warn!("Invalid advertisement type: {}", s);
+                AdvertisementType::Unknown
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Advertisement {
@@ -9,8 +42,8 @@ pub struct Advertisement {
     pub peer_asn: String,
     pub id: String,
     pub host: String,
-    pub msg_type: String,
-    pub path: Option<Vec<u64>>,
+    pub msg_type: AdvertisementType,
+    pub path: Option<Path>,
     pub community: Option<Vec<Vec<u64>>>,
     pub origin: Option<String>,
     pub announcements: Option<Vec<Announcement>>,
@@ -23,7 +56,7 @@ impl Advertisement {
         Default::default()
     }
 
-    pub fn get_updates(&self) -> Vec<Route> {
+    pub fn get_routes(&self) -> Vec<Route> {
         let mut routes: Vec<Route> = Vec::new();
         if let Some(announcements) = &self.announcements {
             for announcement in announcements.iter() {
@@ -44,6 +77,8 @@ impl Advertisement {
         vec![]
     }
 }
+
+impl Message for Advertisement {}
 
 impl From<RisLiveData> for Advertisement {
     fn from(ris_live_data: RisLiveData) -> Self {

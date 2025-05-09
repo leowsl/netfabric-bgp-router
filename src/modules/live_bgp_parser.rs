@@ -1,3 +1,4 @@
+use crate::components::advertisment::Advertisement;
 use crate::components::ris_live_data::RisLiveMessage;
 use crate::utils::message_bus::{Message, MessageSender};
 use crate::utils::state_machine::{State, StateTransition};
@@ -23,7 +24,7 @@ pub enum RestartPolicy {
 }
 impl Default for RestartPolicy {
     fn default() -> Self {
-        Self::StopOnError
+        Self::RestartOnError
     }
 }
 
@@ -96,8 +97,10 @@ impl LiveBgpParser {
         // Process buffer line by line
         while let Some(pos) = self.bytes_buffer.iter().position(|&b| b == b'\n') {
             let chunk = self.bytes_buffer.split_to(pos + 1);
-            if let Ok(message) = serde_json::from_slice::<RisLiveMessage>(&chunk) {
-                self.sender.try_send(Box::new(message.data))?;
+            let message = serde_json::from_slice::<RisLiveMessage>(&chunk)?;
+            if message.msg_type == "ris_message" {
+                self.sender
+                    .try_send(Box::new(Advertisement::from(message.data)))?;
             }
         }
         Ok(())
