@@ -1,20 +1,6 @@
-use crate::components::live_bgp_parser::{RisLiveData, Announcement};
 use serde::{Deserialize, Serialize};
-
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct Route {
-    pub prefix: String,
-    pub next_hop: String,
-    pub as_path: Vec<u64>,
-    pub community: Vec<Vec<u64>>,
-}
-
-impl Route {
-    pub fn new() -> Self {
-        Default::default()
-    }
-}
+use crate::components::route::Route;
+use crate::components::ris_live_data::{Announcement, RisLiveData};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Advertisement {

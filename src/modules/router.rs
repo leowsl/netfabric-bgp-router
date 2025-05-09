@@ -1,9 +1,8 @@
-use crate::bgp::Advertisement;
-use crate::components::live_bgp_parser::RisLiveData;
+use crate::components::advertisment::Advertisement;
 use crate::components::bgp_rib::BgpRib;
+use crate::components::ris_live_data::RisLiveData;
 use crate::utils::message_bus::MessageReceiver;
 use crate::utils::state_machine::{State, StateTransition};
-use log::info;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -42,7 +41,8 @@ impl State for Router {
                                 let updates = Advertisement::from(bgp_msg).get_updates();
                                 for update in updates {
                                     rib.update_route(update);
-                                }                            }
+                                }
+                            }
                         }
                     }
                 }
@@ -55,10 +55,10 @@ impl State for Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::state_machine::{StateMachine, StateMachineError};
     use crate::utils::message_bus::{MessageBus, MessageBusError};
+    use crate::utils::state_machine::{StateMachine, StateMachineError};
     use crate::utils::thread_manager::ThreadManager;
-    
+
     #[test]
     fn test_create_router() {
         let router = Router::new(Uuid::new_v4());
@@ -90,13 +90,12 @@ mod tests {
 
     #[test]
     fn test_router_state_work() -> Result<(), StateMachineError> {
-        use crate::components::live_bgp_parser::RisLiveMessage;
-        use crate::components::live_bgp_parser::RisLiveData;
+        use crate::components::ris_live_data::{RisLiveData, RisLiveMessage};
 
         let mut thread_manager: ThreadManager = ThreadManager::new();
         let mut router = Router::new(Uuid::new_v4());
         let channel_id = Uuid::new_v4();
-        
+
         if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
             message_bus.create_channel_with_uuid(0, channel_id)?;
             let receiver = message_bus.subscribe(channel_id)?;
@@ -108,23 +107,25 @@ mod tests {
 
         if let Ok(message_bus) = thread_manager.lock_message_bus() {
             let sender = message_bus.publish(channel_id)?;
-            sender.send(Box::new(RisLiveMessage {
-                msg_type: "RisLiveMessage".to_string(),
-                data: RisLiveData {
-                    timestamp: 0.0,
-                    peer: "192.168.1.1".to_string(),
-                    peer_asn: "1".to_string(),
-                    id: "test".to_string(),
-                    host: "test".to_string(),
+            sender
+                .send(Box::new(RisLiveMessage {
                     msg_type: "RisLiveMessage".to_string(),
-                    path: None,
-                    community: None,
-                    origin: None,
-                    announcements: None,
-                    raw: None,
-                    withdrawals: None,
-                },
-            })).map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;
+                    data: RisLiveData {
+                        timestamp: 0.0,
+                        peer: "192.168.1.1".to_string(),
+                        peer_asn: "1".to_string(),
+                        id: "test".to_string(),
+                        host: "test".to_string(),
+                        msg_type: "RisLiveMessage".to_string(),
+                        path: None,
+                        community: None,
+                        origin: None,
+                        announcements: None,
+                        raw: None,
+                        withdrawals: None,
+                    },
+                }))
+                .map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;
         }
 
         std::thread::sleep(std::time::Duration::from_secs(1));

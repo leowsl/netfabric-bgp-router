@@ -1,12 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::components::router::Router;
 use crate::components::bgp_rib::BgpRib;
-use crate::utils::thread_manager::ThreadManager;
+use crate::modules::router::Router;
 use crate::utils::state_machine::{StateMachine, StateMachineError};
-use uuid::Uuid;
-use log::{info, error};
+use crate::utils::thread_manager::ThreadManager;
+use log::info;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 pub struct NetworkManager<'a> {
     rib: Arc<Mutex<BgpRib>>,
@@ -37,14 +37,12 @@ impl<'a> NetworkManager<'a> {
     pub fn insert_router(&mut self, mut router: Router) {
         if self.routers.contains_key(&router.id) {
             panic!("Router already exists");
-        }
-        else {
+        } else {
             let id: Uuid = router.id.clone();
             router.set_rib(&self.rib);
             if let Ok(state_machine) = StateMachine::new(self.thread_manager, router) {
                 self.routers.insert(id, state_machine);
-            }
-            else {
+            } else {
                 panic!("Failed to create state machine for router");
             }
         }
@@ -57,7 +55,7 @@ impl<'a> NetworkManager<'a> {
         }
         Ok(())
     }
-    
+
     pub fn stop(&mut self) -> Result<(), StateMachineError> {
         info!("Stopping network");
         for state_machine in self.routers.values_mut() {
@@ -67,9 +65,7 @@ impl<'a> NetworkManager<'a> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 }

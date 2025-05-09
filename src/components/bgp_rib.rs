@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, str::FromStr};
-use std::net::IpAddr;
-use crate::components::bgp::{Route, Advertisement};
-use log::info;
+use crate::components::route::Route;
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
+use log::info;
+use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
+use std::{collections::HashMap, str::FromStr};
 
 type RouterMask = u8;
 pub struct BgpRib {
@@ -26,7 +26,7 @@ impl BgpRib {
         self.treebitmap.len()
     }
 
-    pub fn export_to_file(&self, file_path: &str) {   
+    pub fn export_to_file(&self, file_path: &str) {
         use std::fs::File;
         use std::io::BufWriter;
 
@@ -43,11 +43,11 @@ impl BgpRib {
     pub fn import_from_file(file_path: &str) -> Self {
         use std::fs::File;
         use std::io::BufReader;
-        
+
         let file: File = File::open(file_path).unwrap();
         let reader = BufReader::new(file);
         let routes: Vec<(String, RibEntry)> = serde_json::from_reader(reader).unwrap();
-        
+
         let mut rib = Self::new();
         for (prefix, entry) in routes {
             if let Ok(network) = IpNetwork::from_str(&prefix) {
@@ -61,20 +61,14 @@ impl BgpRib {
         return self
             .treebitmap
             .longest_match(address)
-            .map(|(_prefix, e)| 
-                e.routes.clone()
-            )
+            .map(|(_prefix, e)| e.routes.clone())
             .unwrap_or(vec![]);
     }
 
     pub fn get_bestroute_for_router(&self, prefix: &str, router: &RouterMask) -> Option<Route> {
-        self
-            .best_routes
+        self.best_routes
             .get(prefix)
-            .and_then(|router_map| router_map
-                .get(router)
-                .cloned()
-            )
+            .and_then(|router_map| router_map.get(router).cloned())
     }
 
     pub fn update_route(&mut self, route: Route) {
@@ -84,7 +78,7 @@ impl BgpRib {
                 "next_hop: {:?}, as_path: {:?}, community: {:?}",
                 route.next_hop, route.as_path, route.community
             ),
-            routes: vec![route]
+            routes: vec![route],
         };
         self.treebitmap.insert(prefix, entry);
     }
@@ -109,10 +103,7 @@ struct RibEntry {
 
 impl RibEntry {
     fn new(data: String, routes: Vec<Route>) -> Self {
-        Self { 
-            data,
-            routes,
-        }
+        Self { data, routes }
     }
 }
 
@@ -165,13 +156,13 @@ mod tests {
 
         rib1.export_to_file(file_path);
         let rib2 = BgpRib::import_from_file(file_path);
-        
+
         // Compare tables by converting to sorted vectors
         let routes1: Vec<_> = rib1.treebitmap.iter().collect();
         let routes2: Vec<_> = rib2.treebitmap.iter().collect();
         assert_eq!(routes1, routes2);
         assert_eq!(rib1.best_routes, rib2.best_routes);
-        
+
         remove_file(file_path).unwrap();
     }
 
