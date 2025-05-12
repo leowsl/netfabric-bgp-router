@@ -1,13 +1,8 @@
 use serde::{Deserialize, Serialize};
 use crate::utils::message_bus::Message;
-use crate::components::advertisment::AdvertisementType;
+use crate::components::advertisement::AdvertisementType;
 use crate::components::route::Path;
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-pub struct Announcement {
-    pub next_hop: String,
-    pub prefixes: Vec<String>,
-}
+use crate::components::advertisement::Announcement;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Notification {

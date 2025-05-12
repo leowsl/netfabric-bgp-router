@@ -1,8 +1,14 @@
-use crate::components::ris_live_data::{Announcement, RisLiveData};
-use crate::components::route::{Route, Path};
+use crate::components::ris_live_data::RisLiveData;
+use crate::components::route::{Path, Route};
 use crate::utils::message_bus::Message;
 use log::warn;
 use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct Announcement {
+    pub next_hop: String,
+    pub prefixes: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "String")]

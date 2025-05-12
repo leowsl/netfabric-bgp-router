@@ -1,4 +1,4 @@
-use netfabric_bgp::components::advertisment::AdvertisementType;
+use netfabric_bgp::components::advertisement::AdvertisementType;
 use netfabric_bgp::utils::message_bus::Message;
 use netfabric_bgp::utils::state_machine::{StateMachine, StateMachineError};
 use netfabric_bgp::utils::thread_manager::ThreadManager;

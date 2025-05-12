@@ -1,4 +1,4 @@
-use crate::components::advertisment::Advertisement;
+use crate::components::advertisement::Advertisement;
 use crate::components::bgp_rib::BgpRib;
 use crate::components::filters::Filter;
 use crate::components::route::Route;
@@ -53,12 +53,11 @@ impl Router {
                 RouterChannel::Outbound(_) => continue,
                 RouterChannel::Inbound(receiver) => {
                     while let Ok(msg) = receiver.try_recv() {
-                        msg.cast::<Advertisement>()
-                            .and_then(|ad| apply_filters(ad, &connection.filters))
-                            .and_then(|ad| {
-                                advertisements.push(ad.clone());
-                                Some(())
-                            });
+                        if let Some(mut ad) = msg.cast::<Advertisement>().cloned() {
+                            if apply_filters(&mut ad, &connection.filters).is_some() {
+                                advertisements.push(ad);
+                            }
+                        }
                     }
                 }
             }
@@ -212,8 +211,7 @@ mod tests {
 
     #[test]
     fn test_router_state_work() -> Result<(), StateMachineError> {
-        use crate::components::advertisment::AdvertisementType;
-        use crate::components::ris_live_data::Announcement;
+        use crate::components::advertisement::{AdvertisementType, Announcement};
         use crate::components::route::PathElement;
         use crate::utils::message_bus::Message;
         use std::net::IpAddr;

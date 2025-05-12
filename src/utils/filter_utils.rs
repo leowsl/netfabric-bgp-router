@@ -1,20 +1,28 @@
 use crate::components::filters::Filter;
 
 pub fn apply_filters<'a, T: 'static + Send + Sync>(
-    element: &'a T,
+    element: &'a mut T,
     filters: &Vec<Box<dyn Filter<T>>>,
-) -> Option<&'a T> {
-    if filters.iter().all(|filter| filter.filter(&element)) {
-        return Some(element);
+) -> Option<&'a mut T> 
+where
+    T: Clone,
+{
+    for filter in filters {
+        if !filter.filter(element){
+            return None;
+        }
     }
-    None
+    Some(element)
 }
 pub fn apply_filters_vec<'a, T: 'static + Send + Sync>(
-    elements: Vec<&'a T>,
+    elements: Vec<&'a mut T>,
     filters: &Vec<Box<dyn Filter<T>>>,
-) -> Vec<&'a T> {
+) -> Vec<&'a mut T> 
+where
+    T: Clone,
+{
     elements
         .into_iter()
-        .filter(|element| filters.iter().all(|filter| filter.filter(element)))
+        .filter_map(|element| apply_filters(element, filters))
         .collect()
 }

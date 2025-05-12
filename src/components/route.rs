@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(untagged)]
 pub enum PathElement {
     ASN(u64),
-    ASPath(Vec<u64>),
+    ASSet(Vec<u64>),
 }
 pub type Path = Vec<PathElement>;
 

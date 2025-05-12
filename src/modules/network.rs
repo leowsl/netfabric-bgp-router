@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_connect_router_pair() {
-        use crate::components::advertisment::{Advertisement, AdvertisementType};
+        use crate::components::advertisement::{Advertisement, AdvertisementType};
         use crate::components::route::PathElement;
 
         let mut thread_manager = ThreadManager::new();
