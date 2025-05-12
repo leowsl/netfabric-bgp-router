@@ -2,6 +2,7 @@ use netfabric_bgp::components::advertisment::AdvertisementType;
 use netfabric_bgp::utils::message_bus::Message;
 use netfabric_bgp::utils::state_machine::{StateMachine, StateMachineError};
 use netfabric_bgp::utils::thread_manager::ThreadManager;
+use netfabric_bgp::modules::network::NetworkManagerError;
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -193,7 +194,7 @@ fn test_router() -> Result<(), StateMachineError> {
 }
 
 #[test]
-fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), StateMachineError> {
+fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), NetworkManagerError> {
     use netfabric_bgp::modules::live_bgp_parser::LiveBgpParser;
     use netfabric_bgp::modules::network::NetworkManager;
     use netfabric_bgp::modules::router::{Router, RouterChannel, RouterConnection};

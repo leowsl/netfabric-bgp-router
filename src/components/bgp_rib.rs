@@ -1,14 +1,13 @@
 use crate::components::route::Route;
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
-use log::info;
-use serde::{Deserialize, Serialize};
+use log::error;
 use std::net::IpAddr;
 use std::{collections::HashMap, str::FromStr};
 
 type RouterMask = u8;
 pub struct BgpRib {
-    treebitmap: IpNetworkTable<RibEntry>,
+    treebitmap: IpNetworkTable<Route>,
     // router_mapping: HashMap<RouterMask, String>,
     best_routes: HashMap<String, HashMap<RouterMask, Route>>,
 }
@@ -26,13 +25,17 @@ impl BgpRib {
         self.treebitmap.len()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (IpNetwork, &Route)> {
+        self.treebitmap.iter()
+    }
+
     pub fn export_to_file(&self, file_path: &str) {
         use std::fs::File;
         use std::io::BufWriter;
 
         let file = File::create(file_path).unwrap();
         let writer = BufWriter::new(file);
-        let routes: Vec<(String, RibEntry)> = self
+        let routes: Vec<(String, Route)> = self
             .treebitmap
             .iter()
             .map(|(network, value)| (network.to_string(), value.clone()))
@@ -46,22 +49,23 @@ impl BgpRib {
 
         let file: File = File::open(file_path).unwrap();
         let reader = BufReader::new(file);
-        let routes: Vec<(String, RibEntry)> = serde_json::from_reader(reader).unwrap();
+        let routes: Vec<(String, Route)> = serde_json::from_reader(reader).unwrap();
 
         let mut rib = Self::new();
-        for (prefix, entry) in routes {
+        for (prefix, route) in routes {
             if let Ok(network) = IpNetwork::from_str(&prefix) {
-                rib.treebitmap.insert(network, entry);
+                rib.treebitmap.insert(network, route);
             }
         }
         return rib;
     }
 
+    //TODO get all routes and not just one
     pub fn get_routes_for_router(&self, address: IpAddr, router: &RouterMask) -> Vec<Route> {
         return self
             .treebitmap
             .longest_match(address)
-            .map(|(_prefix, e)| e.routes.clone())
+            .map(|(_prefix, routes)| vec![routes.clone()])
             .unwrap_or(vec![]);
     }
 
@@ -71,18 +75,15 @@ impl BgpRib {
             .and_then(|router_map| router_map.get(router).cloned())
     }
 
-    pub fn update_route(&mut self, route: Route) {
-        let prefix = IpNetwork::from_str(&route.prefix).unwrap();
-        let entry = RibEntry {
-            data: format!(
-                "next_hop: {:?}, as_path: {:?}, community: {:?}",
-                route.next_hop, route.as_path, route.community
-            ),
-            routes: vec![route],
-        };
-        self.treebitmap.insert(prefix, entry);
+    pub fn update_route(&mut self, route: &Route) {
+        if let Ok(prefix) = IpNetwork::from_str(&route.prefix) {
+            self.treebitmap.insert(prefix, route.clone());
+        }
+        else {
+            error!("Invalid prefix: {}", route.prefix);
+        }
     }
-    pub fn update_routes(&mut self, routes: Vec<Route>) {
+    pub fn update_routes(&mut self, routes: &Vec<Route>) {
         for route in routes {
             self.update_route(route);
         }
@@ -100,18 +101,6 @@ impl Clone for BgpRib {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct RibEntry {
-    data: String,
-    routes: Vec<Route>,
-}
-
-impl RibEntry {
-    fn new(data: String, routes: Vec<Route>) -> Self {
-        Self { data, routes }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,15 +115,14 @@ mod tests {
     #[test]
     fn test_clone() {
         let mut rib = BgpRib::new();
-        rib.update_route(Route {
+        rib.update_route(&Route {
             prefix: "1.1.1.1/32".to_string(),
             next_hop: "192.168.1.1".to_string(),
             as_path: vec![
                 PathElement::ASN(1),
                 PathElement::ASN(2),
                 PathElement::ASN(3),
-            ],
-            community: vec![vec![1, 2, 3]],
+            ]
         });
         let rib_clone = rib.clone();
 
@@ -151,21 +139,19 @@ mod tests {
         let file_path = "test.json";
 
         let mut rib1 = BgpRib::new();
-        rib1.update_route(Route {
+        rib1.update_route(&Route {
             prefix: "1.1.1.1/32".to_string(),
             next_hop: "192.168.1.1".to_string(),
             as_path: vec![
                 PathElement::ASN(1),
                 PathElement::ASN(2),
                 PathElement::ASN(3),
-            ],
-            community: vec![vec![1, 2, 3]],
+            ]
         });
-        rib1.update_route(Route {
+        rib1.update_route(&Route {
             prefix: "2.2.0.0/32".to_string(),
             next_hop: "192.168.1.1".to_string(),
-            as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
-            community: vec![],
+            as_path: vec![PathElement::ASN(1), PathElement::ASN(4)]
         });
 
         rib1.export_to_file(file_path);
@@ -190,10 +176,9 @@ mod tests {
                 PathElement::ASN(1),
                 PathElement::ASN(2),
                 PathElement::ASN(3),
-            ],
-            community: vec![vec![1, 2, 3]],
+            ]
         };
-        rib.update_route(route_insert.clone());
+        rib.update_route(&route_insert);
 
         let route_match = rib.get_routes_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &0);
         assert_eq!(route_match.len(), 1);

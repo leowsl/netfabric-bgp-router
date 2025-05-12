@@ -13,7 +13,6 @@ pub struct Route {
     pub prefix: String,
     pub next_hop: String,
     pub as_path: Path,
-    pub community: Vec<Vec<u64>>,
 }
 
 impl Route {

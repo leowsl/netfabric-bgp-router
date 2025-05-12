@@ -65,7 +65,6 @@ impl Advertisement {
                         next_hop: announcement.next_hop.clone(),
                         prefix: prefix.clone(),
                         as_path: self.path.clone().unwrap_or_default(),
-                        community: self.community.clone().unwrap_or_default(),
                     });
                 }
             }

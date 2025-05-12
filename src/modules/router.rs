@@ -1,9 +1,10 @@
 use crate::components::advertisment::Advertisement;
 use crate::components::bgp_rib::BgpRib;
+use crate::components::route::Route;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::state_machine::{State, StateTransition};
-use log::warn;
+use log::{info, warn};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use thiserror::Error;
 use uuid::Uuid;
@@ -13,7 +14,25 @@ pub enum RouterChannel {
     Outbound(MessageSender),
 }
 pub trait Filter<T>: 'static + Send + Sync {
-    fn filter(&self, route: &T) -> bool;
+    fn filter(&self, element: &T) -> bool;
+}
+pub fn apply_filters<'a, T: 'static + Send + Sync>(
+    element: &'a T,
+    filters: &Vec<Box<dyn Filter<T>>>,
+) -> Option<&'a T> {
+    if filters.iter().all(|filter| filter.filter(&element)) {
+        return Some(element);
+    }
+    None
+}
+pub fn apply_filters_vec<'a, T: 'static + Send + Sync>(
+    elements: Vec<&'a T>,
+    filters: &Vec<Box<dyn Filter<T>>>,
+) -> Vec<&'a T> {
+    elements
+        .into_iter()
+        .filter(|element| filters.iter().all(|filter| filter.filter(element)))
+        .collect()
 }
 pub struct RouterConnection {
     pub channel: RouterChannel,
@@ -43,47 +62,71 @@ impl Router {
         self.bgp_rib = Some(rib.clone());
     }
 
-    pub fn process_incoming_advertisements(&mut self) -> Result<(), RouterError> {
-        let rib_mutex = self
-            .bgp_rib
-            .as_ref()
-            .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?;
+    pub fn process_incoming_advertisements(&mut self) -> Result<Vec<Advertisement>, RouterError> {
+        let mut advertisements: Vec<Advertisement> = Vec::new();
         for connection_mutex in &self.connections {
-            match &connection_mutex.try_lock()?.channel {
+            let connection = connection_mutex.try_lock()?;
+            match &connection.channel {
                 RouterChannel::Outbound(_) => continue,
                 RouterChannel::Inbound(receiver) => {
                     while let Ok(msg) = receiver.try_recv() {
-                        if let Some(advertisement) = msg.cast::<Advertisement>() {
-                            rib_mutex
-                                .try_lock()?
-                                .update_routes(advertisement.get_routes());
-                                //TODO apply filters
-                        }
+                        msg.cast::<Advertisement>()
+                            .and_then(|ad| apply_filters(ad, &connection.filters))
+                            .and_then(|ad| {
+                                info!("Received advertisement: {:?}", ad);
+                                advertisements.push(ad.clone());
+                                Some(())
+                            });
+                    }
+                }
+            }
+        }
+        let routes: Vec<Route> = advertisements
+            .iter()
+            .flat_map(|ad| ad.get_routes())
+            .collect();
+        self.bgp_rib
+            .as_ref()
+            .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?
+            .try_lock()?
+            .update_routes(&routes);
+        Ok(advertisements)
+    }
+
+    pub fn process_outgoing_advertisements(
+        &mut self,
+        advertisements: Vec<Advertisement>,
+    ) -> Result<(), RouterError> {
+        for connection_mutex in &self.connections {
+            let connection = connection_mutex.try_lock()?;
+            match &connection.channel {
+                RouterChannel::Inbound(_) => continue,
+                RouterChannel::Outbound(sender) => {
+                    for advertisement in &advertisements {
+                        info!("Sending advertisement: {:?}", advertisement);
+                        sender
+                            .send(Box::new(advertisement.clone()))
+                            .map_err(|e| RouterError::MessageBusError(e.to_string()))?;
                     }
                 }
             }
         }
         Ok(())
     }
-
-    pub fn process_outgoing_advertisements(&mut self) -> Result<(), RouterError> {
-        // TODO: Implement this
-        Ok(())
-    }
 }
 impl State for Router {
     fn work(&mut self) -> StateTransition {
         // Process incoming advertisements
-        match self.process_incoming_advertisements() {
-            Ok(_) => (),
+        let routes = match self.process_incoming_advertisements() {
+            Ok(routes) => routes,
             Err(e) => {
                 warn!("Error processing incoming advertisements: {}", e);
                 return StateTransition::Continue;
             }
-        }
+        };
 
         // Process outgoing advertisements
-        match self.process_outgoing_advertisements() {
+        match self.process_outgoing_advertisements(routes) {
             Ok(_) => (),
             Err(e) => {
                 warn!("Error processing outgoing advertisements: {}", e);
@@ -168,7 +211,11 @@ mod tests {
     #[test]
     fn test_router_state_work() -> Result<(), StateMachineError> {
         use crate::components::advertisment::AdvertisementType;
-        use crate::components::ris_live_data::{RisLiveData, RisLiveMessage};
+        use crate::components::ris_live_data::Announcement;
+        use crate::components::route::PathElement;
+        use crate::utils::message_bus::Message;
+        use std::net::IpAddr;
+        use std::net::Ipv4Addr;
 
         let mut thread_manager: ThreadManager = ThreadManager::new();
         let mut router = Router::new(Uuid::new_v4());
@@ -179,7 +226,7 @@ mod tests {
         router.set_rib(&bgp_rib);
 
         if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
-            message_bus.create_channel_with_uuid(0, channel_id)?;
+            message_bus.create_channel_with_uuid(1, channel_id)?;
             let receiver: std::sync::mpsc::Receiver<Box<dyn Message + 'static>> =
                 message_bus.subscribe(channel_id)?;
             let router_connection = RouterConnection {
@@ -192,41 +239,42 @@ mod tests {
         let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
         state_machine.start()?;
 
+        info!("Starting to send advertisements");
+
         if let Ok(message_bus) = thread_manager.lock_message_bus() {
             let sender = message_bus.publish(channel_id)?;
+            let advertisement = Advertisement {
+                timestamp: 0.0,
+                peer: "192.168.1.1".to_string(),
+                peer_asn: "1".to_string(),
+                id: "test".to_string(),
+                host: "test".to_string(),
+                msg_type: AdvertisementType::Update,
+                path: Some(vec![PathElement::ASN(1), PathElement::ASN(2)]),
+                community: None,
+                origin: None,
+                announcements: Some(vec![Announcement {
+                    next_hop: "192.168.1.1".to_string(),
+                    prefixes: vec!["192.168.1.0/24".to_string()],
+                }]),
+                raw: None,
+                withdrawals: None,
+            };
             sender
-                .send(Box::new(RisLiveMessage {
-                    msg_type: "RisLiveMessage".to_string(),
-                    data: RisLiveData {
-                        timestamp: 0.0,
-                        peer: "192.168.1.1".to_string(),
-                        peer_asn: "1".to_string(),
-                        id: "test".to_string(),
-                        host: "test".to_string(),
-                        msg_type: AdvertisementType::Update,
-                        path: None,
-                        community: None,
-                        origin: None,
-                        announcements: None,
-                        raw: None,
-                        withdrawals: None,
-                        aggregator: None,
-                        asn: None,
-                        capabilities: None,
-                        med: None,
-                        direction: None,
-                        version: None,
-                        hold_time: None,
-                        router_id: None,
-                        notification: None,
-                        state: None,
-                    },
-                }))
+                .send(Box::new(advertisement))
                 .map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;
         }
 
         std::thread::sleep(std::time::Duration::from_secs(1));
         state_machine.stop()?;
+
+        let rib = bgp_rib.lock().unwrap();
+        assert!(rib.get_prefix_count() == (1, 0));
+        let routes = rib.get_routes_for_router(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), &0xff);
+        assert!(routes.len() == 1);
+        assert!(routes[0].prefix == "192.168.1.0/24");
+        assert!(routes[0].next_hop == "192.168.1.1");
+        assert!(routes[0].as_path == vec![PathElement::ASN(1), PathElement::ASN(2)]);
         Ok(())
     }
 }
