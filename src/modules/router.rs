@@ -56,7 +56,6 @@ impl Router {
                         msg.cast::<Advertisement>()
                             .and_then(|ad| apply_filters(ad, &connection.filters))
                             .and_then(|ad| {
-                                info!("Received advertisement: {:?}", ad);
                                 advertisements.push(ad.clone());
                                 Some(())
                             });
@@ -72,7 +71,7 @@ impl Router {
             .as_ref()
             .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?
             .try_lock()?
-            .update_routes(&routes);
+            .update_routes(&routes, &self.id);
         Ok(advertisements)
     }
 
@@ -86,7 +85,6 @@ impl Router {
                 RouterChannel::Inbound(_) => continue,
                 RouterChannel::Outbound(sender) => {
                     for advertisement in &advertisements {
-                        info!("Sending advertisement: {:?}", advertisement);
                         sender
                             .send(Box::new(advertisement.clone()))
                             .map_err(|e| RouterError::MessageBusError(e.to_string()))?;
@@ -166,14 +164,23 @@ mod tests {
 
     #[test]
     fn test_router_set_rib() {
-        use crate::components::bgp_rib::RouterMask;
+        use crate::utils::router_mask::RouterMask;
 
         let id = Uuid::new_v4();
         let mut router = Router::new(id.clone());
         let rib = Arc::new(Mutex::new(BgpRib::new()));
         router.set_rib(&rib);
         assert!(router.bgp_rib.is_some());
-        assert_eq!(router.bgp_rib.unwrap().lock().unwrap().get_router_mask_map().get_all(), &RouterMask(0b1));
+        assert_eq!(
+            router
+                .bgp_rib
+                .unwrap()
+                .lock()
+                .unwrap()
+                .get_router_mask_map()
+                .get_all(),
+            &RouterMask(0b1)
+        );
     }
 
     #[test]

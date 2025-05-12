@@ -1,68 +1,52 @@
 use crate::components::route::Route;
+use crate::utils::router_mask::{RouterMask, RouterMaskMap};
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
 use log::error;
-use uuid::Uuid;
 use std::net::IpAddr;
-use std::{collections::HashMap, str::FromStr};
+use std::str::FromStr;
+use uuid::Uuid;
 
-#[derive(Debug, PartialEq, Hash, Eq, Copy, Clone)]
-pub struct RouterMask(pub u64);
-impl Default for RouterMask {
-    fn default() -> Self {
-        Self(0)
-    }
-}
-impl RouterMask {
-    pub fn len(&self) -> usize {
-        self.0.count_ones() as usize
-    }
-}
-pub struct RouterMaskMap {
-    default: RouterMask,
-    mask: RouterMask,
-    map: HashMap<Uuid, RouterMask>,
-}
-impl RouterMaskMap {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+struct BgpRibTreebitmapEntry(Vec<(RouterMask, Route)>);
+impl BgpRibTreebitmapEntry {
     pub fn new() -> Self {
-        Self { default: RouterMask::default(), mask: RouterMask::default(), map: HashMap::new() }
+        Self(Vec::new())
     }
-    pub fn try_get(&self, router_id: &Uuid) -> &RouterMask {
-        return self.map.get(router_id).unwrap_or(&self.default);
-    }
-    pub fn get(&mut self, router_id: &Uuid) -> &RouterMask {
-        if self.map.contains_key(router_id) {
-            return self.map.get(router_id).unwrap();
+    pub fn insert(&mut self, router: &RouterMask, route: &Route) {
+        if let Some((mask, _)) = self
+            .0
+            .iter_mut()
+            .find(|(_, other_route)| other_route == route)
+        {
+            mask.combine_with(router);
+        } else {
+            self.0.push((router.clone(), route.clone()));
         }
-        if self.mask.0 == u64::MAX {
-            panic!("Router mask map is full");
-        }
-        for bit in 0..64{
-            let router_bit = 1 << bit;
-            if self.mask.0 & router_bit == 0 {
-                self.map.insert(router_id.clone(), RouterMask(router_bit));
-                self.mask.0 |= router_bit;
-                return self.map.get(router_id).unwrap();
-            }
-        }
-        panic!("RouterMaskMap is corrupted");
     }
-    pub fn get_all(&self) -> &RouterMask {
-        &self.mask
+    pub fn withdraw(&mut self, router: &RouterMask, route: &Route) {
+        self.0
+            .retain(|(mask, other_route)| route != other_route || mask.0 & router.0 != router.0);
     }
-    pub fn remove(&mut self, router_id: &Uuid) {
-        self.mask.0 ^= self.map.remove(router_id).unwrap().0;
+    pub fn get_with_mask(&self, router: &RouterMask) -> Vec<&Route> {
+        self.0
+            .iter()
+            .filter(|(mask, _)| mask.contains(router))
+            .map(|(_, route)| route)
+            .collect()
+    }
+    pub fn get_all(&self) -> Vec<&Route> {
+        self.0.iter().map(|(_, route)| route).collect()
     }
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.0.len()
     }
 }
-
 pub struct BgpRib {
     router_mask_map: RouterMaskMap,
-    treebitmap: IpNetworkTable<Route>,
+    treebitmap: IpNetworkTable<BgpRibTreebitmapEntry>,
     // router_mapping: HashMap<RouterMask, String>,
-    best_routes: HashMap<String, HashMap<RouterMask, Route>>,
+    // best_routes: IpNetworkTable<BgpRibTreebitmapEntry>,
 }
 
 impl BgpRib {
@@ -71,7 +55,7 @@ impl BgpRib {
             router_mask_map: RouterMaskMap::new(),
             treebitmap: IpNetworkTable::new(),
             // router_mapping: HashMap::new(),
-            best_routes: HashMap::new(),
+            // best_routes: HashMap::new(),
         }
     }
 
@@ -79,7 +63,7 @@ impl BgpRib {
         self.treebitmap.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (IpNetwork, &Route)> {
+    pub fn iter(&self) -> impl Iterator<Item = (IpNetwork, &BgpRibTreebitmapEntry)> {
         self.treebitmap.iter()
     }
 
@@ -89,7 +73,7 @@ impl BgpRib {
 
         let file = File::create(file_path).unwrap();
         let writer = BufWriter::new(file);
-        let routes: Vec<(String, Route)> = self
+        let routes: Vec<(String, BgpRibTreebitmapEntry)> = self
             .treebitmap
             .iter()
             .map(|(network, value)| (network.to_string(), value.clone()))
@@ -103,7 +87,7 @@ impl BgpRib {
 
         let file: File = File::open(file_path).unwrap();
         let reader = BufReader::new(file);
-        let routes: Vec<(String, Route)> = serde_json::from_reader(reader).unwrap();
+        let routes: Vec<(String, BgpRibTreebitmapEntry)> = serde_json::from_reader(reader).unwrap();
 
         let mut rib = Self::new();
         for (prefix, route) in routes {
@@ -118,38 +102,42 @@ impl BgpRib {
         self.router_mask_map.get(router_id);
     }
 
-    #[cfg(test)]    // Router mask is private, this is only for testing
+    #[cfg(test)] // Router mask is private, this is only for testing
     pub fn get_router_mask_map(&self) -> &RouterMaskMap {
         &self.router_mask_map
     }
 
-    //TODO get all routes and not just one
-    pub fn get_routes_for_router(&self, address: IpAddr, router: &Uuid) -> Vec<Route> {
+    pub fn get_routes_for_router(&self, address: IpAddr, router: &Uuid) -> Vec<&Route> {
         let router_mask = self.router_mask_map.try_get(router);
-        return self
-            .treebitmap
+        self.treebitmap
             .longest_match(address)
-            .map(|(_prefix, routes)| vec![routes.clone()])
-            .unwrap_or(vec![]);
+            .map(|(_prefix, entry)| entry.get_with_mask(router_mask))
+            .unwrap_or_default()
     }
 
-    pub fn get_bestroute_for_router(&self, prefix: &str, router: &RouterMask) -> Option<Route> {
-        self.best_routes
-            .get(prefix)
-            .and_then(|router_map| router_map.get(router).cloned())
-    }
+    // pub fn get_bestroute_for_router(&self, prefix: &str, router: &RouterMask) -> Option<Route> {
+    //     self.best_routes
+    //         .get(prefix)
+    //         .and_then(|router_map| router_map.get(router).cloned())
+    // }
 
-    pub fn update_route(&mut self, route: &Route) {
+    pub fn update_route(&mut self, route: &Route, id: &Uuid) {
+        let router_mask = self.router_mask_map.get(id);
         if let Ok(prefix) = IpNetwork::from_str(&route.prefix) {
-            self.treebitmap.insert(prefix, route.clone());
-        }
-        else {
+            if self.treebitmap.exact_match(prefix.clone()).is_none() {
+                self.treebitmap.insert(prefix, BgpRibTreebitmapEntry::new());
+            }
+            self.treebitmap
+                .exact_match_mut(prefix)
+                .unwrap()
+                .insert(router_mask, route);
+        } else {
             error!("Invalid prefix: {}", route.prefix);
         }
     }
-    pub fn update_routes(&mut self, routes: &Vec<Route>) {
+    pub fn update_routes(&mut self, routes: &Vec<Route>, id: &Uuid) {
         for route in routes {
-            self.update_route(route);
+            self.update_route(route, id);
         }
     }
 }
@@ -160,8 +148,15 @@ impl Clone for BgpRib {
         for (network, entry) in self.treebitmap.iter() {
             new_rib.treebitmap.insert(network, entry.clone());
         }
-        new_rib.best_routes = self.best_routes.clone();
+        // new_rib.best_routes = self.best_routes.clone();
         return new_rib;
+    }
+}
+impl PartialEq for BgpRib {
+    fn eq(&self, other: &Self) -> bool {
+        let routes1: Vec<_> = self.treebitmap.iter().collect();
+        let routes2: Vec<_> = other.treebitmap.iter().collect();
+        return routes1 == routes2;
     }
 }
 
@@ -169,6 +164,62 @@ impl Clone for BgpRib {
 mod tests {
     use super::*;
     use crate::components::route::PathElement;
+
+    fn test_create_rib_with_routes() -> BgpRib {
+        let mut rib = BgpRib::new();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        rib.update_route(
+            &Route {
+                prefix: "1.1.1.1/32".to_string(),
+                next_hop: "192.168.1.1".to_string(),
+                as_path: vec![
+                    PathElement::ASN(1),
+                    PathElement::ASN(2),
+                    PathElement::ASN(3),
+                ],
+                ..Default::default()
+            },
+            &id1,
+        );
+        rib.update_route(
+            &Route {
+                prefix: "2.2.0.0/8".to_string(),
+                next_hop: "192.168.1.1".to_string(),
+                as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
+                ..Default::default()
+            },
+            &id1,
+        );
+        rib.update_route(
+            &Route {
+                prefix: "2.2.0.0/8".to_string(),
+                next_hop: "192.168.1.1".to_string(),
+                as_path: vec![PathElement::ASN(1), PathElement::ASN(40)],
+                ..Default::default()
+            },
+            &id2,
+        );
+        rib.update_route(
+            &Route {
+                prefix: "2.2.1.3/32".to_string(),
+                next_hop: "192.168.1.1".to_string(),
+                as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
+                ..Default::default()
+            },
+            &id1,
+        );
+        rib.update_route(
+            &Route {
+                prefix: "2.2.1.3/32".to_string(),
+                next_hop: "192.168.1.1".to_string(),
+                as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
+                ..Default::default()
+            },
+            &id2,
+        );
+        return rib;
+    }
 
     #[test]
     fn test_new() {
@@ -178,23 +229,9 @@ mod tests {
 
     #[test]
     fn test_clone() {
-        let mut rib = BgpRib::new();
-        rib.update_route(&Route {
-            prefix: "1.1.1.1/32".to_string(),
-            next_hop: "192.168.1.1".to_string(),
-            as_path: vec![
-                PathElement::ASN(1),
-                PathElement::ASN(2),
-                PathElement::ASN(3),
-            ]
-        });
+        let rib = test_create_rib_with_routes();
         let rib_clone = rib.clone();
-
-        // Compare tables by converting to sorted vectors
-        let routes1: Vec<_> = rib.treebitmap.iter().collect();
-        let routes2: Vec<_> = rib_clone.treebitmap.iter().collect();
-        assert_eq!(routes1, routes2);
-        assert_eq!(rib.best_routes, rib_clone.best_routes);
+        assert!(rib == rib_clone);
     }
 
     #[test]
@@ -202,37 +239,19 @@ mod tests {
         use std::fs::remove_file;
         let file_path = "test.json";
 
-        let mut rib1 = BgpRib::new();
-        rib1.update_route(&Route {
-            prefix: "1.1.1.1/32".to_string(),
-            next_hop: "192.168.1.1".to_string(),
-            as_path: vec![
-                PathElement::ASN(1),
-                PathElement::ASN(2),
-                PathElement::ASN(3),
-            ]
-        });
-        rib1.update_route(&Route {
-            prefix: "2.2.0.0/32".to_string(),
-            next_hop: "192.168.1.1".to_string(),
-            as_path: vec![PathElement::ASN(1), PathElement::ASN(4)]
-        });
+        let rib1 = test_create_rib_with_routes();
 
         rib1.export_to_file(file_path);
         let rib2 = BgpRib::import_from_file(file_path);
-
-        // Compare tables by converting to sorted vectors
-        let routes1: Vec<_> = rib1.treebitmap.iter().collect();
-        let routes2: Vec<_> = rib2.treebitmap.iter().collect();
-        assert_eq!(routes1, routes2);
-        assert_eq!(rib1.best_routes, rib2.best_routes);
-
         remove_file(file_path).unwrap();
+
+        assert!(rib1 == rib2);
     }
 
     #[test]
     fn test_get_routes_for_router() {
         let mut rib = BgpRib::new();
+        let id = Uuid::new_v4();
         let route_insert = Route {
             prefix: "1.1.1.0/24".to_string(),
             next_hop: "192.168.1.1".to_string(),
@@ -240,40 +259,70 @@ mod tests {
                 PathElement::ASN(1),
                 PathElement::ASN(2),
                 PathElement::ASN(3),
-            ]
+            ],
+            ..Default::default()
         };
-        rib.update_route(&route_insert);
+        rib.update_route(&route_insert, &id);
 
-        let route_match = rib.get_routes_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &Uuid::nil());
+        let route_match = rib.get_routes_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &id);
         assert_eq!(route_match.len(), 1);
-        assert_eq!(route_match[0], route_insert);
+        assert_eq!(route_match[0], &route_insert);
     }
 
     #[test]
-    fn test_router_mask_map_create() {
-        let router_mask_map = RouterMaskMap::new();
-        assert_eq!(router_mask_map.get_all(), &RouterMask(0));
-    }
+    fn test_treebitmap_entry() {
+        let mut entry = BgpRibTreebitmapEntry::new();
+        assert_eq!(entry.len(), 0);
 
-    #[test]
-    fn test_router_mask_map_get() {
-        let mut router_mask_map = RouterMaskMap::new();
-        let r1 = Uuid::new_v4();
-        let r2 = Uuid::new_v4();
-        let _ = router_mask_map.get(&r1);
-        let _ = router_mask_map.get(&r2);
+        let mask1 = RouterMask(0b001);
+        let route1 = Route {
+            prefix: "1.1.1.0/24".to_string(),
+            next_hop: "192.168.1.1".to_string(),
+            as_path: vec![
+                PathElement::ASN(1),
+                PathElement::ASN(2),
+                PathElement::ASN(3),
+            ],
+            ..Default::default()
+        };
+        let mask2 = RouterMask(0b010);
+        let route2 = Route {
+            prefix: "1.1.1.0/24".to_string(),
+            next_hop: "192.168.10.1".to_string(),
+            as_path: vec![PathElement::ASN(5), PathElement::ASN(3)],
+            ..Default::default()
+        };
+        let mask3 = mask2.clone();
+        let route3 = Route {
+            prefix: "1.1.1.0/24".to_string(),
+            next_hop: "192.168.20.1".to_string(),
+            as_path: vec![
+                PathElement::ASN(15),
+                PathElement::ASN(31),
+                PathElement::ASN(3),
+            ],
+            ..Default::default()
+        };
+        let mask4 = RouterMask(0b100);
+        let route4 = route1.clone();
 
-        assert_eq!(router_mask_map.len(), 2);
-        assert_eq!(router_mask_map.get(&r1), &RouterMask(0b01));
-        assert_eq!(router_mask_map.get(&r2), &RouterMask(0b10));
-        assert_eq!(router_mask_map.get_all(), &RouterMask(0b11))
-    }
+        entry.insert(&mask1, &route1);
+        entry.insert(&mask2, &route2);
+        entry.insert(&mask3, &route3);
+        entry.insert(&mask4, &route4);
+        assert_eq!(entry.len(), 3); // route 1 and 4 are stored in the same entry
 
-    #[test]
-    fn test_router_mask_map_remove() {
-        let mut router_mask_map = RouterMaskMap::new();
-        let r1 = Uuid::new_v4();
-        assert_eq!(router_mask_map.get(&r1), &RouterMask(0b1));
-        router_mask_map.remove(&r1);
+        assert_eq!(
+            entry.get_with_mask(&RouterMask::default()),
+            Vec::<&Route>::new()
+        );
+        assert_eq!(entry.get_with_mask(&mask1), vec![&route1]);
+        assert_eq!(entry.get_with_mask(&mask2), vec![&route2, &route3]);
+        assert_eq!(
+            entry.get_with_mask(&mask1.combine(&mask2)),
+            Vec::<&Route>::new()
+        );
+        assert_eq!(entry.get_all(), vec![&route1, &route2, &route3]);
+        assert_eq!(entry.get_with_mask(&mask1.combine(&mask4)), vec![&route1]);
     }
 }
