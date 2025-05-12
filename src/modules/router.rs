@@ -1,6 +1,8 @@
 use crate::components::advertisment::Advertisement;
 use crate::components::bgp_rib::BgpRib;
+use crate::components::filters::Filter;
 use crate::components::route::Route;
+use crate::utils::filter_utils::apply_filters;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::state_machine::{State, StateTransition};
@@ -13,27 +15,7 @@ pub enum RouterChannel {
     Inbound(MessageReceiver),
     Outbound(MessageSender),
 }
-pub trait Filter<T>: 'static + Send + Sync {
-    fn filter(&self, element: &T) -> bool;
-}
-pub fn apply_filters<'a, T: 'static + Send + Sync>(
-    element: &'a T,
-    filters: &Vec<Box<dyn Filter<T>>>,
-) -> Option<&'a T> {
-    if filters.iter().all(|filter| filter.filter(&element)) {
-        return Some(element);
-    }
-    None
-}
-pub fn apply_filters_vec<'a, T: 'static + Send + Sync>(
-    elements: Vec<&'a T>,
-    filters: &Vec<Box<dyn Filter<T>>>,
-) -> Vec<&'a T> {
-    elements
-        .into_iter()
-        .filter(|element| filters.iter().all(|filter| filter.filter(element)))
-        .collect()
-}
+
 pub struct RouterConnection {
     pub channel: RouterChannel,
     pub filters: Vec<Box<dyn Filter<Advertisement>>>,
