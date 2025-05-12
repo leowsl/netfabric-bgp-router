@@ -2,11 +2,64 @@ use crate::components::route::Route;
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
 use log::error;
+use uuid::Uuid;
 use std::net::IpAddr;
 use std::{collections::HashMap, str::FromStr};
 
-type RouterMask = u8;
+#[derive(Debug, PartialEq, Hash, Eq, Copy, Clone)]
+pub struct RouterMask(pub u64);
+impl Default for RouterMask {
+    fn default() -> Self {
+        Self(0)
+    }
+}
+impl RouterMask {
+    pub fn len(&self) -> usize {
+        self.0.count_ones() as usize
+    }
+}
+pub struct RouterMaskMap {
+    default: RouterMask,
+    mask: RouterMask,
+    map: HashMap<Uuid, RouterMask>,
+}
+impl RouterMaskMap {
+    pub fn new() -> Self {
+        Self { default: RouterMask::default(), mask: RouterMask::default(), map: HashMap::new() }
+    }
+    pub fn try_get(&self, router_id: &Uuid) -> &RouterMask {
+        return self.map.get(router_id).unwrap_or(&self.default);
+    }
+    pub fn get(&mut self, router_id: &Uuid) -> &RouterMask {
+        if self.map.contains_key(router_id) {
+            return self.map.get(router_id).unwrap();
+        }
+        if self.mask.0 == u64::MAX {
+            panic!("Router mask map is full");
+        }
+        for bit in 0..64{
+            let router_bit = 1 << bit;
+            if self.mask.0 & router_bit == 0 {
+                self.map.insert(router_id.clone(), RouterMask(router_bit));
+                self.mask.0 |= router_bit;
+                return self.map.get(router_id).unwrap();
+            }
+        }
+        panic!("RouterMaskMap is corrupted");
+    }
+    pub fn get_all(&self) -> &RouterMask {
+        &self.mask
+    }
+    pub fn remove(&mut self, router_id: &Uuid) {
+        self.mask.0 ^= self.map.remove(router_id).unwrap().0;
+    }
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 pub struct BgpRib {
+    router_mask_map: RouterMaskMap,
     treebitmap: IpNetworkTable<Route>,
     // router_mapping: HashMap<RouterMask, String>,
     best_routes: HashMap<String, HashMap<RouterMask, Route>>,
@@ -15,6 +68,7 @@ pub struct BgpRib {
 impl BgpRib {
     pub fn new() -> Self {
         Self {
+            router_mask_map: RouterMaskMap::new(),
             treebitmap: IpNetworkTable::new(),
             // router_mapping: HashMap::new(),
             best_routes: HashMap::new(),
@@ -60,8 +114,18 @@ impl BgpRib {
         return rib;
     }
 
+    pub fn register_router(&mut self, router_id: &Uuid) {
+        self.router_mask_map.get(router_id);
+    }
+
+    #[cfg(test)]    // Router mask is private, this is only for testing
+    pub fn get_router_mask_map(&self) -> &RouterMaskMap {
+        &self.router_mask_map
+    }
+
     //TODO get all routes and not just one
-    pub fn get_routes_for_router(&self, address: IpAddr, router: &RouterMask) -> Vec<Route> {
+    pub fn get_routes_for_router(&self, address: IpAddr, router: &Uuid) -> Vec<Route> {
+        let router_mask = self.router_mask_map.try_get(router);
         return self
             .treebitmap
             .longest_match(address)
@@ -180,8 +244,36 @@ mod tests {
         };
         rib.update_route(&route_insert);
 
-        let route_match = rib.get_routes_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &0);
+        let route_match = rib.get_routes_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &Uuid::nil());
         assert_eq!(route_match.len(), 1);
         assert_eq!(route_match[0], route_insert);
+    }
+
+    #[test]
+    fn test_router_mask_map_create() {
+        let router_mask_map = RouterMaskMap::new();
+        assert_eq!(router_mask_map.get_all(), &RouterMask(0));
+    }
+
+    #[test]
+    fn test_router_mask_map_get() {
+        let mut router_mask_map = RouterMaskMap::new();
+        let r1 = Uuid::new_v4();
+        let r2 = Uuid::new_v4();
+        let _ = router_mask_map.get(&r1);
+        let _ = router_mask_map.get(&r2);
+
+        assert_eq!(router_mask_map.len(), 2);
+        assert_eq!(router_mask_map.get(&r1), &RouterMask(0b01));
+        assert_eq!(router_mask_map.get(&r2), &RouterMask(0b10));
+        assert_eq!(router_mask_map.get_all(), &RouterMask(0b11))
+    }
+
+    #[test]
+    fn test_router_mask_map_remove() {
+        let mut router_mask_map = RouterMaskMap::new();
+        let r1 = Uuid::new_v4();
+        assert_eq!(router_mask_map.get(&r1), &RouterMask(0b1));
+        router_mask_map.remove(&r1);
     }
 }

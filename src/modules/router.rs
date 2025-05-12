@@ -42,6 +42,7 @@ impl Router {
 
     pub fn set_rib(&mut self, rib: &Arc<Mutex<BgpRib>>) {
         self.bgp_rib = Some(rib.clone());
+        rib.lock().unwrap().register_router(&self.id);
     }
 
     pub fn process_incoming_advertisements(&mut self) -> Result<Vec<Advertisement>, RouterError> {
@@ -164,6 +165,18 @@ mod tests {
     }
 
     #[test]
+    fn test_router_set_rib() {
+        use crate::components::bgp_rib::RouterMask;
+
+        let id = Uuid::new_v4();
+        let mut router = Router::new(id.clone());
+        let rib = Arc::new(Mutex::new(BgpRib::new()));
+        router.set_rib(&rib);
+        assert!(router.bgp_rib.is_some());
+        assert_eq!(router.bgp_rib.unwrap().lock().unwrap().get_router_mask_map().get_all(), &RouterMask(0b1));
+    }
+
+    #[test]
     fn test_router_add_connection() -> Result<(), MessageBusError> {
         let mut message_bus: MessageBus = MessageBus::new();
         let channel_id = message_bus.create_channel(0)?;
@@ -200,7 +213,8 @@ mod tests {
         use std::net::Ipv4Addr;
 
         let mut thread_manager: ThreadManager = ThreadManager::new();
-        let mut router = Router::new(Uuid::new_v4());
+        let router_id = Uuid::new_v4();
+        let mut router = Router::new(router_id.clone());
         let channel_id = Uuid::new_v4();
 
         // Create and set up BGP RIB
@@ -252,7 +266,8 @@ mod tests {
 
         let rib = bgp_rib.lock().unwrap();
         assert!(rib.get_prefix_count() == (1, 0));
-        let routes = rib.get_routes_for_router(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), &0xff);
+        let routes =
+            rib.get_routes_for_router(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), &router_id);
         assert!(routes.len() == 1);
         assert!(routes[0].prefix == "192.168.1.0/24");
         assert!(routes[0].next_hop == "192.168.1.1");
