@@ -6,13 +6,13 @@ use netfabric_bgp::ThreadManager;
 fn test_create_and_start_network(
     thread_manager: &mut ThreadManager,
 ) -> Result<(), NetworkManagerError> {
-    use netfabric_bgp::components::filters::{CombinedOrFilter, CombinedAndFilter, HostFilter};
+    use netfabric_bgp::components::advertisement::Advertisement;
+    use netfabric_bgp::components::filters::{CombinedOrFilter, HostFilter, NoFilter};
     use netfabric_bgp::modules::live_bgp_parser::{create_parser_router_pair, LiveBgpParser};
     use netfabric_bgp::modules::network::NetworkManager;
     use netfabric_bgp::modules::router::RouterOptions;
     use netfabric_bgp::utils::state_machine::StateMachine;
     use uuid::Uuid;
-    use netfabric_bgp::components::advertisement::Advertisement;
 
     // ids
     let router1_id = Uuid::new_v4();
@@ -20,23 +20,23 @@ fn test_create_and_start_network(
     let router3_id = Uuid::new_v4();
 
     // Live Bgp Parser
-    let mut filter: CombinedAndFilter<Advertisement> = CombinedAndFilter::new();
     let host_filter: CombinedOrFilter<Advertisement> = CombinedOrFilter::from_vec(vec![
         HostFilter::new("rrc15.ripe.net".to_string()),
         HostFilter::new("rrc16.ripe.net".to_string()),
     ]);
-    filter.add_filter(host_filter);
 
     let (bgp_live_parser, mut bgp_live_parser_router) =
-        create_parser_router_pair(thread_manager, 1000, filter)?;
+        create_parser_router_pair(thread_manager, 1000, host_filter)?;
     let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
     let router0_id = bgp_live_parser_router.id.clone();
     bgp_live_parser_router.set_options(RouterOptions {
         use_bgp_rib: true,
         ..Default::default()
     });
-    println!("Router ID Mapping:\nRouter 0: {:?}\nRouter 1: {:?}\nRouter 2: {:?}\nRouter 3: {:?}", router0_id, router1_id, router2_id, router3_id);
-
+    println!(
+        "Router ID Mapping:\nRouter 0: {:?}\nRouter 1: {:?}\nRouter 2: {:?}\nRouter 3: {:?}",
+        router0_id, router1_id, router2_id, router3_id
+    );
 
     // Create network
     let mut network_manager = NetworkManager::new(thread_manager);
@@ -46,11 +46,11 @@ fn test_create_and_start_network(
     network_manager.create_router(router3_id);
 
     // Connections
-    network_manager.connect_router_pair(&router0_id, &router1_id, false, 200)?;
-    network_manager.connect_router_pair(&router0_id, &router2_id, false, 400)?;
-    network_manager.connect_router_pair(&router1_id, &router2_id, false, 400)?;
-    network_manager.connect_router_pair(&router1_id, &router3_id, false, 400)?;
-    network_manager.connect_router_pair(&router2_id, &router3_id, false, 400)?;
+    network_manager.connect_router_pair(&router0_id, &router1_id, 200, (NoFilter, NoFilter))?;
+    network_manager.connect_router_pair(&router0_id, &router2_id, 400, (NoFilter, NoFilter))?;
+    network_manager.connect_router_pair(&router1_id, &router2_id, 400, (NoFilter, NoFilter))?;
+    network_manager.connect_router_pair(&router1_id, &router3_id, 400, (NoFilter, NoFilter))?;
+    network_manager.connect_router_pair(&router2_id, &router3_id, 400, (NoFilter, NoFilter))?;
 
     // Start the network
     network_manager.start()?;
@@ -64,7 +64,9 @@ fn test_create_and_start_network(
     network_manager.stop()?;
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    network_manager.get_rib_clone().export_to_file("./data/rib.json");
+    network_manager
+        .get_rib_clone()
+        .export_to_file("./data/rib.json");
     info!("{}", &network_manager.get_rib_clone());
 
     drop(network_manager);

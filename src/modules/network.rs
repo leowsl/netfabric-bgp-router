@@ -53,12 +53,12 @@ impl<'a> NetworkManager<'a> {
         self.routers.get_mut(id)
     }
 
-    pub fn connect_router_pair(
+    pub fn connect_router_pair<F1: Filter<Advertisement>, F2: Filter<Advertisement>>(
         &mut self,
         router_id: &Uuid,
         peer_id: &Uuid,
-        duplex: bool,
         link_buffer_size: usize,
+        filters: (F1, F2),
     ) -> Result<(), NetworkManagerError> {
         let [Some(router), Some(peer)] = self.routers.get_disjoint_mut([router_id, peer_id]) else {
             return Err(NetworkManagerError::ConnectionError(format!(
@@ -73,17 +73,13 @@ impl<'a> NetworkManager<'a> {
 
         router.add_connection(RouterConnection {
             channel: RouterChannel::Outbound(tx),
-            filter: Box::new(NoFilter),
+            filter: Box::new(filters.0),
         });
         peer.add_connection(RouterConnection {
             channel: RouterChannel::Inbound(rx),
-            filter: Box::new(NoFilter),
+            filter: Box::new(filters.1),
         });
-
-        return match duplex {
-            true => self.connect_router_pair(peer_id, router_id, false, link_buffer_size),
-            false => Ok(()),
-        };
+        Ok(())
     }
 
     pub fn create_router_rx<F: Filter<Advertisement>>(
@@ -199,27 +195,78 @@ impl std::error::Error for NetworkManagerError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::router::Router;
 
     #[test]
-    fn test_connect_router_pair() {
-        use crate::components::advertisement::{Advertisement, AdvertisementType};
-        use crate::components::route::PathElement;
-        use crate::components::filters::NoFilter;
+    fn test_create_network_manager() -> Result<(), NetworkManagerError> {
+        let mut thread_manager = ThreadManager::new();
+        let network = NetworkManager::new(&mut thread_manager);
+        let rib = network.get_rib_lock();
 
+        assert!(rib.get_prefix_count() == (0, 0));
+        assert!(network.routers.is_empty());
+        assert!(network.router_sm.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_routers() {
         let mut thread_manager = ThreadManager::new();
         let mut network = NetworkManager::new(&mut thread_manager);
 
-        let r1 = Uuid::new_v4();
-        let r2 = Uuid::new_v4();
-        network.create_router(r1);
-        network.create_router(r2);
+        let router1_id = Uuid::new_v4();
+        let router2_id = Uuid::new_v4();
 
-        network.connect_router_pair(&r1, &r2, true, 10).unwrap();
+        network.create_router(router1_id);
+        network.insert_router(Router::new(router2_id));
 
-        let rx = network.create_router_rx(&r1, 10, NoFilter).unwrap();
-        let tx = network.create_router_tx(&r2, 10, NoFilter).unwrap();
+        assert!(network.routers.contains_key(&router1_id));
+        assert!(network.routers.contains_key(&router2_id));
 
-        let ad = Advertisement {
+        assert!(network.start().is_ok());
+        assert!(network.router_sm.contains_key(&router1_id));
+        assert!(network.router_sm.contains_key(&router2_id));
+
+        assert!(network.stop().is_ok());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        assert!(!&network
+            .router_sm
+            .get(&router1_id)
+            .unwrap()
+            .get_runner_active(&network.thread_manager));
+        assert!(!&network
+            .router_sm
+            .get(&router2_id)
+            .unwrap()
+            .get_runner_active(&network.thread_manager));
+    }
+
+    #[test]
+    fn test_connect_routers() {
+        use crate::components::advertisement::{Advertisement, AdvertisementType};
+        use crate::components::filters::NoFilter;
+        use crate::components::route::PathElement;
+
+        // Set up network with two routers
+        let mut thread_manager = ThreadManager::new();
+        let mut network = NetworkManager::new(&mut thread_manager);
+
+        let router1_id = Uuid::new_v4();
+        let router2_id = Uuid::new_v4();
+        network.create_router(router1_id);
+        network.create_router(router2_id);
+
+        // Connect routers with test channels
+        network
+            .connect_router_pair(&router1_id, &router2_id, 10, (NoFilter, NoFilter))
+            .unwrap();
+
+        let tx = network.create_router_tx(&router1_id, 10, NoFilter).unwrap();
+        let rx = network.create_router_rx(&router2_id, 10, NoFilter).unwrap();
+
+        // Create test advertisement
+        let test_ad = Advertisement {
             timestamp: std::time::Instant::now().elapsed().as_secs_f64(),
             peer: "192.168.1.1".to_string(),
             peer_asn: "1".to_string(),
@@ -234,11 +281,74 @@ mod tests {
             raw: None,
         };
 
+        // Start network and verify message passing
         network.start().unwrap();
+        tx.send(Box::new(test_ad.clone())).unwrap();
 
-        tx.send(Box::new(ad.clone())).unwrap();
-        let rec_box = rx.recv().unwrap();
-        let rec = rec_box.cast::<Advertisement>().unwrap();
-        assert_eq!(rec, &ad);
+        let received = rx.recv().unwrap();
+        let received_ad = received.cast::<Advertisement>().unwrap();
+        assert_eq!(received_ad, &test_ad);
+    }
+
+    #[test]
+    #[should_panic(expected = "Router already exists")]
+    fn test_duplicate_router() {
+        let mut thread_manager = ThreadManager::new();
+        let mut network = NetworkManager::new(&mut thread_manager);
+        let router_id = Uuid::new_v4();
+        network.create_router(router_id);
+        network.create_router(router_id);
+    }
+
+    #[test]
+    fn test_nonexistent_router_operations() {
+        let mut thread_manager = ThreadManager::new();
+        let mut network = NetworkManager::new(&mut thread_manager);
+        let router_id = Uuid::new_v4();
+
+        assert!(matches!(network.get_router_mut(&router_id), None));
+
+        assert!(matches!(
+            network.connect_router_pair(&router_id, &Uuid::new_v4(), 10, (NoFilter, NoFilter)),
+            Err(NetworkManagerError::ConnectionError(_))
+        ));
+    }
+
+    #[test]
+    fn test_rib_operations() {
+        let mut thread_manager = ThreadManager::new();
+        let network = NetworkManager::new(&mut thread_manager);
+
+        let rib_lock = network.get_rib_lock();
+        assert_eq!(rib_lock.get_prefix_count(), (0, 0));
+        drop(rib_lock);
+        
+        let rib_clone = network.get_rib_clone();
+        assert_eq!(rib_clone.get_prefix_count(), (0, 0));
+    }
+
+    #[test]
+    fn test_multiple_router_connections() {
+        let mut thread_manager = ThreadManager::new();
+        let mut network = NetworkManager::new(&mut thread_manager);
+
+        let router1_id = Uuid::new_v4();
+        let router2_id = Uuid::new_v4();
+        let router3_id = Uuid::new_v4();
+
+        network.create_router(router1_id);
+        network.create_router(router2_id);
+        network.create_router(router3_id);
+
+        // Connect router1 to both router2 and router3
+        network
+            .connect_router_pair(&router1_id, &router2_id, 10, (NoFilter, NoFilter))
+            .unwrap();
+        network
+            .connect_router_pair(&router1_id, &router3_id, 10, (NoFilter, NoFilter))
+            .unwrap();
+
+        assert!(network.start().is_ok());
+        assert!(network.stop().is_ok());
     }
 }
