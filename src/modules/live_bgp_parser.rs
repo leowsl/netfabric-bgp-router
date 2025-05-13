@@ -32,7 +32,32 @@ impl Default for RestartPolicy {
     }
 }
 
-// Init State
+#[derive(Debug, Clone)]
+pub struct LiveBgpParserStatistics {
+    pub messages_processed: u64,
+    pub bytes_received: u64,
+    pub errors_encountered: u64,
+    pub last_error: Option<String>,
+    pub start_time: std::time::Instant,
+    pub end_time: std::time::Instant,
+    pub last_message_time: Option<std::time::Instant>,
+}
+
+impl Default for LiveBgpParserStatistics {
+    fn default() -> Self {
+        Self {
+            messages_processed: 0,
+            bytes_received: 0,
+            errors_encountered: 0,
+            last_error: None,
+            start_time: std::time::Instant::now(),
+            end_time: std::time::Instant::now(),
+            last_message_time: None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct LiveBgpParser {
     url: &'static str,
     stream_handle: Option<JoinHandle<()>>,
@@ -41,6 +66,7 @@ pub struct LiveBgpParser {
     sender: MessageSender,
     bytes_buffer: BytesMut,
     restart_policy: RestartPolicy,
+    statistics: LiveBgpParserStatistics,
 }
 impl LiveBgpParser {
     pub fn new(sender: MessageSender) -> Self {
@@ -52,6 +78,7 @@ impl LiveBgpParser {
             restart_policy: RestartPolicy::default(),
             receiver: None,
             sender,
+            statistics: LiveBgpParserStatistics::default(),
         }
     }
     pub fn start_stream(&mut self) -> Result<(), BgpParserError> {
@@ -88,6 +115,9 @@ impl LiveBgpParser {
         self.bytes_buffer.clear();
         Ok(())
     }
+    pub fn get_statistics(&self) -> &LiveBgpParserStatistics {
+        &self.statistics
+    }
     pub fn process_buffer(&mut self) -> Result<(), BgpParserError> {
         // Write byte stream to buffer
         let receiver = self
@@ -96,15 +126,29 @@ impl LiveBgpParser {
             .ok_or_else(|| BgpParserError::StreamError("No receiver found".to_string()))?;
         while let Ok(bytes) = receiver.try_recv() {
             self.bytes_buffer.extend_from_slice(&bytes);
+            self.statistics.bytes_received += bytes.len() as u64;
         }
 
         // Process buffer line by line
         while let Some(pos) = self.bytes_buffer.iter().position(|&b| b == b'\n') {
             let chunk = self.bytes_buffer.split_to(pos + 1);
-            let message = serde_json::from_slice::<RisLiveMessage>(&chunk)?;
-            if message.msg_type == "ris_message" {
-                self.sender
-                    .try_send(Box::new(Advertisement::from(message.data)))?;
+            match serde_json::from_slice::<RisLiveMessage>(&chunk) {
+                Ok(message) => {
+                    if message.msg_type == "ris_message" {
+                        if let Err(e) = self.sender.try_send(Box::new(Advertisement::from(message.data))) {
+                            self.statistics.errors_encountered += 1;
+                            self.statistics.last_error = Some(format!("Failed to send message: {}", e));
+                            return Err(e.into());
+                        }
+                        self.statistics.messages_processed += 1;
+                        self.statistics.last_message_time = Some(std::time::Instant::now());
+                    }
+                }
+                Err(e) => {
+                    self.statistics.errors_encountered += 1;
+                    self.statistics.last_error = Some(format!("Failed to parse message: {}", e));
+                    return Err(e.into());
+                }
             }
         }
         Ok(())
@@ -143,11 +187,28 @@ impl State for LiveBgpParser {
         StateTransition::Continue
     }
     fn cleanup(&mut self) {
+        self.statistics.end_time = std::time::Instant::now();
         if self.stop_stream().is_err() {
             error!("Couldn't properly cleanup stream!");
         }
     }
 }
+
+impl Clone for LiveBgpParser {
+    fn clone(&self) -> Self {
+        Self {
+            url: self.url,
+            stream_handle: None,
+            runtime: Arc::new(Runtime::new().unwrap()),
+            receiver: None,
+            sender: self.sender.clone(),
+            bytes_buffer: self.bytes_buffer.clone(),
+            restart_policy: self.restart_policy.clone(),
+            statistics: self.statistics.clone(),
+        }
+    }
+}
+
 
 pub fn create_parser_router_pair(
     thread_manager: &mut ThreadManager,

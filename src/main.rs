@@ -7,11 +7,10 @@ fn test_create_and_start_network(
     thread_manager: &mut ThreadManager,
 ) -> Result<(), NetworkManagerError> {
     use netfabric_bgp::components::filters::FilterHost;
-    use netfabric_bgp::modules::live_bgp_parser::create_parser_router_pair;
+    use netfabric_bgp::modules::live_bgp_parser::{create_parser_router_pair, LiveBgpParser};
     use netfabric_bgp::modules::network::NetworkManager;
     use netfabric_bgp::modules::router::RouterOptions;
     use netfabric_bgp::utils::state_machine::StateMachine;
-    use netfabric_bgp::utils::pretty_prints::bgp_rib_overview;
     use uuid::Uuid;
 
     // ids
@@ -32,7 +31,7 @@ fn test_create_and_start_network(
     println!("Router ID Mapping:\nRouter 0: {:?}\nRouter 1: {:?}\nRouter 2: {:?}\nRouter 3: {:?}", router0_id, router1_id, router2_id, router3_id);
 
 
-    // Create and start network
+    // Create network
     let mut network_manager = NetworkManager::new(thread_manager);
     network_manager.insert_router(bgp_live_parser_router);
     network_manager.create_router(router1_id);
@@ -46,6 +45,7 @@ fn test_create_and_start_network(
     network_manager.connect_router_pair(&router1_id, &router3_id, false, 500)?;
     network_manager.connect_router_pair(&router2_id, &router3_id, false, 500)?;
 
+    // Start the network
     network_manager.start()?;
     bgp_live_sm.start()?;
 
@@ -54,8 +54,16 @@ fn test_create_and_start_network(
     // Stop the network
     bgp_live_sm.stop()?;
     network_manager.stop()?;
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
     network_manager.get_rib_clone().export_to_file("./data/rib.json");
-    info!("{}", bgp_rib_overview(&network_manager.get_rib_clone()));
+    info!("{}", &network_manager.get_rib_clone());
+
+    drop(network_manager);
+    if let Some(final_state) = bgp_live_sm.get_final_state_cloned::<LiveBgpParser>(thread_manager) {
+        info!("{}", final_state.get_statistics());
+    }
+
     Ok(())
 }
 
