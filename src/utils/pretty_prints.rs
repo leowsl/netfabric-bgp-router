@@ -3,10 +3,10 @@ use std::fmt;
 
 
 // Format numbers into human readable format
-fn format_numbers(n: u64) -> String {
-    const K: u64 = 1000;
-    const M: u64 = K * 1000;
-    const G: u64 = M * 1000;
+fn format_numbers(n: f64) -> String {
+    const K: f64 = 1000.0;
+    const M: f64 = K * 1000.0;
+    const G: f64 = M * 1000.0;
     
     if n >= G {
         format!("{:.2} G", n / G)
@@ -15,7 +15,7 @@ fn format_numbers(n: u64) -> String {
     } else if n >= K {
         format!("{:.2} K", n / K)
     } else {
-        format!("{} B", n)
+        format!("{:.2} B", n)
     }
 }
 
@@ -85,20 +85,20 @@ impl fmt::Display for LiveBgpParserStatistics {
         writeln!(f, "┌──────────────────────┬────────────────────┐")?;
         writeln!(f, "│ Metric               │ Value              │")?;
         writeln!(f, "├──────────────────────┼────────────────────┤")?;
-        writeln!(f, "│ Messages Processed   │ {:>15}    │", format_numbers(self.messages_processed))?;
+        writeln!(f, "│ Messages Processed   │ {:>15}    │", format_numbers(self.messages_processed as f64))?;
         writeln!(f, "│ Bytes Received       │  {:>15}   │", format_bytes(self.bytes_received))?;
         writeln!(f, "│ Errors Encountered   │ {:>13}      │", self.errors_encountered)?;
         writeln!(f, "│ Messages/Second      │ {:>13.2}      │", messages_per_second)?;
         writeln!(f, "│ Bytes/Second         │   {:>14}/s │", format_bytes(bytes_per_second as u64))?;
         writeln!(f, "│ Runtime              │ {:>13.1} s    │", duration.as_secs_f64())?;
-        if let Some(last_msg) = self.last_message_time {
+        if let Some(last_msg) = self.last_error_time {
             let time_since_last = last_msg.elapsed().as_secs_f64();
             writeln!(f, "│ Time Since Last Msg  │  {:>12.1} s    │", time_since_last)?;
         }
         writeln!(f, "└──────────────────────┴────────────────────┘")?;
 
         if let Some(error) = &self.last_error {
-            if let Some(last_msg) = self.last_message_time {
+            if let Some(last_msg) = self.last_error_time {
                 let error_time = last_msg.elapsed().as_secs_f64();
                 writeln!(f, "\nLast Error ({:.1}s ago):", error_time)?;
                 writeln!(f, "{}", error)?;

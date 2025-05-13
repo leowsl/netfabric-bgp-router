@@ -40,7 +40,7 @@ pub struct LiveBgpParserStatistics {
     pub last_error: Option<String>,
     pub start_time: std::time::Instant,
     pub end_time: std::time::Instant,
-    pub last_message_time: Option<std::time::Instant>,
+    pub last_error_time: Option<std::time::Instant>,
 }
 
 impl Default for LiveBgpParserStatistics {
@@ -50,9 +50,9 @@ impl Default for LiveBgpParserStatistics {
             bytes_received: 0,
             errors_encountered: 0,
             last_error: None,
+            last_error_time: None,
             start_time: std::time::Instant::now(),
             end_time: std::time::Instant::now(),
-            last_message_time: None,
         }
     }
 }
@@ -132,23 +132,10 @@ impl LiveBgpParser {
         // Process buffer line by line
         while let Some(pos) = self.bytes_buffer.iter().position(|&b| b == b'\n') {
             let chunk = self.bytes_buffer.split_to(pos + 1);
-            match serde_json::from_slice::<RisLiveMessage>(&chunk) {
-                Ok(message) => {
-                    if message.msg_type == "ris_message" {
-                        if let Err(e) = self.sender.try_send(Box::new(Advertisement::from(message.data))) {
-                            self.statistics.errors_encountered += 1;
-                            self.statistics.last_error = Some(format!("Failed to send message: {}", e));
-                            return Err(e.into());
-                        }
-                        self.statistics.messages_processed += 1;
-                        self.statistics.last_message_time = Some(std::time::Instant::now());
-                    }
-                }
-                Err(e) => {
-                    self.statistics.errors_encountered += 1;
-                    self.statistics.last_error = Some(format!("Failed to parse message: {}", e));
-                    return Err(e.into());
-                }
+            let message = serde_json::from_slice::<RisLiveMessage>(&chunk)?;
+            if message.msg_type == "ris_message" {
+                self.sender.try_send(Box::new(Advertisement::from(message.data)))?;
+                self.statistics.messages_processed += 1;
             }
         }
         Ok(())
@@ -162,6 +149,9 @@ impl State for LiveBgpParser {
                 Ok(_) => info!("Starting LiveBGP Stream"),
                 Err(e) => {
                     error!("Couldn't start bgp live stream! {}", e);
+                    self.statistics.errors_encountered += 1;
+                    self.statistics.last_error = Some(format!("Couldn't start bgp live stream! {}", e));
+                    self.statistics.last_error_time = Some(std::time::Instant::now());
                     let _ = self.stop_stream(); // could be err as stream was not started
                     match self.restart_policy {
                         RestartPolicy::StopOnError => return StateTransition::Stop,
@@ -175,9 +165,11 @@ impl State for LiveBgpParser {
         match self.process_buffer() {
             Ok(_) => { /*info!("Processing Buffer")*/ }
             Err(e) => {
-                error!("Couldn't process buffer! {}.Timeout for 1 sec to give routers time to catch up.", e);
+                error!("Couldn't process buffer! {}. Timeout for 1 sec to give routers time to catch up.", e);
+                self.statistics.errors_encountered += 1;
+                self.statistics.last_error = Some(format!("Couldn't process buffer! {}. Timeout for 1 sec to give routers time to catch up.", e));
+                self.statistics.last_error_time = Some(std::time::Instant::now());
                 self.stop_stream().unwrap();
-                std::thread::sleep(std::time::Duration::from_secs(1));
                 match self.restart_policy {
                     RestartPolicy::StopOnError => return StateTransition::Stop,
                     RestartPolicy::RestartOnError => return StateTransition::Continue,

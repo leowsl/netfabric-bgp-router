@@ -21,7 +21,7 @@ fn test_create_and_start_network(
     // Live Bgp Parser
     let host_filter = Box::new(FilterHost::new("rrc15.ripe.net".to_string()));
     let (bgp_live_parser, mut bgp_live_parser_router) =
-        create_parser_router_pair(thread_manager, 500, vec![host_filter])?;
+        create_parser_router_pair(thread_manager, 1000, vec![host_filter])?;
     let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
     let router0_id = bgp_live_parser_router.id.clone();
     bgp_live_parser_router.set_options(RouterOptions {
@@ -39,22 +39,23 @@ fn test_create_and_start_network(
     network_manager.create_router(router3_id);
 
     // Connections
-    network_manager.connect_router_pair(&router0_id, &router1_id, false, 500)?;
-    network_manager.connect_router_pair(&router0_id, &router2_id, false, 500)?;
-    network_manager.connect_router_pair(&router1_id, &router2_id, false, 500)?;
-    network_manager.connect_router_pair(&router1_id, &router3_id, false, 500)?;
-    network_manager.connect_router_pair(&router2_id, &router3_id, false, 500)?;
+    network_manager.connect_router_pair(&router0_id, &router1_id, false, 200)?;
+    network_manager.connect_router_pair(&router0_id, &router2_id, false, 400)?;
+    network_manager.connect_router_pair(&router1_id, &router2_id, false, 400)?;
+    network_manager.connect_router_pair(&router1_id, &router3_id, false, 400)?;
+    network_manager.connect_router_pair(&router2_id, &router3_id, false, 400)?;
 
     // Start the network
     network_manager.start()?;
     bgp_live_sm.start()?;
 
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    std::thread::sleep(std::time::Duration::from_secs(10));
 
-    // Stop the network
+    // Stop the network - Give time for the network to stabilize
     bgp_live_sm.stop()?;
-    network_manager.stop()?;
     std::thread::sleep(std::time::Duration::from_secs(1));
+    network_manager.stop()?;
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     network_manager.get_rib_clone().export_to_file("./data/rib.json");
     info!("{}", &network_manager.get_rib_clone());
