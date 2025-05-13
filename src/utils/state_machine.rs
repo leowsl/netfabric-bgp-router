@@ -142,7 +142,7 @@ impl StateMachine {
     }
 
     pub fn get_runner_active(&self, thread_manager: &ThreadManager) -> bool {
-        thread_manager.is_thread_running(&self.runner_thread_id).is_ok()
+        thread_manager.is_thread_running(&self.runner_thread_id).unwrap_or(false)
     }
 
     // every state is downcastable but not necessarily cloneable, so we require it here
