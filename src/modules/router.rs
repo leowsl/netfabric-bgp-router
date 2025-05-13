@@ -1,8 +1,7 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::bgp_rib::BgpRib;
-use crate::components::filters::Filter;
+use crate::components::filters::{Filter};
 use crate::components::route::Route;
-use crate::utils::filter_utils::apply_filters;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::mutex_utils::TryLockWithTimeout;
@@ -19,7 +18,7 @@ pub enum RouterChannel {
 
 pub struct RouterConnection {
     pub channel: RouterChannel,
-    pub filters: Vec<Box<dyn Filter<Advertisement>>>,
+    pub filter: Box<dyn Filter<Advertisement>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -78,7 +77,7 @@ impl Router {
                 RouterChannel::Inbound(receiver) => {
                     while let Ok(msg) = receiver.try_recv() {
                         if let Some(mut ad) = msg.cast::<Advertisement>().cloned() {
-                            if apply_filters(&mut ad, &connection.filters).is_some() {
+                            if connection.filter.filter(&mut ad) {
                                 advertisements.push(ad);
                                 if advertisements.len() >= MAX_BATCH_SIZE {
                                     break;
@@ -187,6 +186,7 @@ mod tests {
     use crate::utils::message_bus::{MessageBus, MessageBusError};
     use crate::utils::state_machine::{StateMachine, StateMachineError};
     use crate::utils::thread_manager::ThreadManager;
+    use crate::components::filters::NoFilter;
 
     #[test]
     fn test_create_router() {
@@ -222,7 +222,7 @@ mod tests {
         let receiver = message_bus.subscribe(channel_id)?;
         let connection = RouterConnection {
             channel: RouterChannel::Inbound(receiver),
-            filters: Vec::new(),
+            filter: Box::new(NoFilter),
         };
         let mut router = Router::new(Uuid::new_v4());
 
@@ -266,7 +266,7 @@ mod tests {
                 message_bus.subscribe(channel_id)?;
             let router_connection = RouterConnection {
                 channel: RouterChannel::Inbound(receiver),
-                filters: Vec::new(),
+                filter: Box::new(NoFilter),
             };
             router.add_connection(router_connection);
         }

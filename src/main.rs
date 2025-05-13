@@ -6,12 +6,13 @@ use netfabric_bgp::ThreadManager;
 fn test_create_and_start_network(
     thread_manager: &mut ThreadManager,
 ) -> Result<(), NetworkManagerError> {
-    use netfabric_bgp::components::filters::FilterHost;
+    use netfabric_bgp::components::filters::{CombinedOrFilter, CombinedAndFilter, HostFilter};
     use netfabric_bgp::modules::live_bgp_parser::{create_parser_router_pair, LiveBgpParser};
     use netfabric_bgp::modules::network::NetworkManager;
     use netfabric_bgp::modules::router::RouterOptions;
     use netfabric_bgp::utils::state_machine::StateMachine;
     use uuid::Uuid;
+    use netfabric_bgp::components::advertisement::Advertisement;
 
     // ids
     let router1_id = Uuid::new_v4();
@@ -19,9 +20,15 @@ fn test_create_and_start_network(
     let router3_id = Uuid::new_v4();
 
     // Live Bgp Parser
-    let host_filter = Box::new(FilterHost::new("rrc15.ripe.net".to_string()));
+    let mut filter: CombinedAndFilter<Advertisement> = CombinedAndFilter::new();
+    let host_filter: CombinedOrFilter<Advertisement> = CombinedOrFilter::from_vec(vec![
+        HostFilter::new("rrc15.ripe.net".to_string()),
+        HostFilter::new("rrc16.ripe.net".to_string()),
+    ]);
+    filter.add_filter(host_filter);
+
     let (bgp_live_parser, mut bgp_live_parser_router) =
-        create_parser_router_pair(thread_manager, 1000, vec![host_filter])?;
+        create_parser_router_pair(thread_manager, 1000, filter)?;
     let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
     let router0_id = bgp_live_parser_router.id.clone();
     bgp_live_parser_router.set_options(RouterOptions {

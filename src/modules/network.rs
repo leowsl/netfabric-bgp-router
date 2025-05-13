@@ -1,6 +1,6 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::bgp_rib::BgpRib;
-use crate::components::filters::Filter;
+use crate::components::filters::{Filter, NoFilter};
 use crate::modules::router::{Router, RouterChannel, RouterConnection};
 use crate::utils::message_bus::{MessageBusError, MessageReceiver, MessageSender};
 use crate::utils::state_machine::{StateMachine, StateMachineError};
@@ -73,11 +73,11 @@ impl<'a> NetworkManager<'a> {
 
         router.add_connection(RouterConnection {
             channel: RouterChannel::Outbound(tx),
-            filters: Vec::new(),
+            filter: Box::new(NoFilter),
         });
         peer.add_connection(RouterConnection {
             channel: RouterChannel::Inbound(rx),
-            filters: Vec::new(),
+            filter: Box::new(NoFilter),
         });
 
         return match duplex {
@@ -86,11 +86,11 @@ impl<'a> NetworkManager<'a> {
         };
     }
 
-    pub fn create_router_rx(
+    pub fn create_router_rx<F: Filter<Advertisement>>(
         &mut self,
         router_id: &Uuid,
         link_buffer_size: usize,
-        filters: Vec<Box<dyn Filter<Advertisement>>>,
+        filter: F,
     ) -> Result<MessageReceiver, NetworkManagerError> {
         let router = self
             .routers
@@ -101,16 +101,16 @@ impl<'a> NetworkManager<'a> {
             .get_message_bus_channel_pair(link_buffer_size)?;
         router.add_connection(RouterConnection {
             channel: RouterChannel::Outbound(tx),
-            filters,
+            filter: Box::new(filter),
         });
         Ok(rx)
     }
 
-    pub fn create_router_tx(
+    pub fn create_router_tx<F: Filter<Advertisement>>(
         &mut self,
         router_id: &Uuid,
         link_buffer_size: usize,
-        filters: Vec<Box<dyn Filter<Advertisement>>>,
+        filter: F,
     ) -> Result<MessageSender, NetworkManagerError> {
         let router = self
             .routers
@@ -121,7 +121,7 @@ impl<'a> NetworkManager<'a> {
             .get_message_bus_channel_pair(link_buffer_size)?;
         router.add_connection(RouterConnection {
             channel: RouterChannel::Inbound(rx),
-            filters,
+            filter: Box::new(filter),
         });
         Ok(tx)
     }
@@ -204,6 +204,7 @@ mod tests {
     fn test_connect_router_pair() {
         use crate::components::advertisement::{Advertisement, AdvertisementType};
         use crate::components::route::PathElement;
+        use crate::components::filters::NoFilter;
 
         let mut thread_manager = ThreadManager::new();
         let mut network = NetworkManager::new(&mut thread_manager);
@@ -215,8 +216,8 @@ mod tests {
 
         network.connect_router_pair(&r1, &r2, true, 10).unwrap();
 
-        let rx = network.create_router_rx(&r1, 10, vec![]).unwrap();
-        let tx = network.create_router_tx(&r2, 10, vec![]).unwrap();
+        let rx = network.create_router_rx(&r1, 10, NoFilter).unwrap();
+        let tx = network.create_router_tx(&r2, 10, NoFilter).unwrap();
 
         let ad = Advertisement {
             timestamp: std::time::Instant::now().elapsed().as_secs_f64(),

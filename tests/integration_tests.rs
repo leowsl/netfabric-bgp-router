@@ -55,13 +55,14 @@ fn test_message_bus() -> Result<(), String> {
 
 #[test]
 fn test_live_bgp_parser() -> Result<(), StateMachineError> {
+    use netfabric_bgp::components::filters::NoFilter;
     use netfabric_bgp::modules::live_bgp_parser::create_parser_router_pair;
     use netfabric_bgp::utils::state_machine::StateMachine;
 
     let mut thread_manager = ThreadManager::new();
 
     // Create parser and router
-    let (parser, router) = create_parser_router_pair(&mut thread_manager, 10, vec![])?;
+    let (parser, router) = create_parser_router_pair(&mut thread_manager, 10, NoFilter)?;
     let (mut parser_sm, mut router_sm) = (
         StateMachine::new(&mut thread_manager, parser)?,
         StateMachine::new(&mut thread_manager, router)?,
@@ -106,6 +107,7 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
 fn test_router() -> Result<(), StateMachineError> {
     use netfabric_bgp::components::ris_live_data::{RisLiveData, RisLiveMessage};
     use netfabric_bgp::modules::router::{Router, RouterChannel, RouterConnection};
+    use netfabric_bgp::components::filters::NoFilter;
 
     let mut thread_manager = ThreadManager::new();
 
@@ -113,7 +115,7 @@ fn test_router() -> Result<(), StateMachineError> {
     let (tx, rx) = thread_manager.get_message_bus_channel_pair(1000)?;
     let router_connection = RouterConnection {
         channel: RouterChannel::Inbound(rx),
-        filters: Vec::new(),
+        filter: Box::new(NoFilter),
     };
     router.add_connection(router_connection);
 
@@ -176,12 +178,13 @@ fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), Networ
     use netfabric_bgp::modules::live_bgp_parser::create_parser_router_pair;
     use netfabric_bgp::modules::network::NetworkManager;
     use netfabric_bgp::utils::state_machine::StateMachine;
+    use netfabric_bgp::components::filters::NoFilter;
 
     let thread_manager = &mut ThreadManager::new();
 
     // Live Bgp Parser
     let (bgp_live_parser, bgp_live_parser_router) =
-        create_parser_router_pair(thread_manager, 500, vec![])?;
+        create_parser_router_pair(thread_manager, 500, NoFilter)?;
     let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
 
     // Create and start network

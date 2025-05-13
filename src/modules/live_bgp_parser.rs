@@ -202,17 +202,17 @@ impl Clone for LiveBgpParser {
 }
 
 
-pub fn create_parser_router_pair(
+pub fn create_parser_router_pair<F: Filter<Advertisement>>(
     thread_manager: &mut ThreadManager,
     channel_capacity: usize,
-    filters: Vec<Box<dyn Filter<Advertisement>>>,
+    filter: F,
 ) -> Result<(LiveBgpParser, Router), ThreadManagerError> {
     let (tx, rx) = thread_manager.get_message_bus_channel_pair(channel_capacity)?;
     let parser = LiveBgpParser::new(tx);
     let mut router = Router::new(Uuid::new_v4());
     router.add_connection(RouterConnection {
         channel: RouterChannel::Inbound(rx),
-        filters,
+        filter: Box::new(filter),
     });
     Ok((parser, router))
 }
