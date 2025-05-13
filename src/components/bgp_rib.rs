@@ -154,17 +154,13 @@ impl BgpRib {
 
     pub fn update_route(&mut self, route: &Route, id: &Uuid) {
         let router_mask = self.router_mask_map.get(id);
-        if let Ok(prefix) = IpNetwork::from_str(&route.prefix) {
-            if self.treebitmap.exact_match(prefix.clone()).is_none() {
-                self.treebitmap.insert(prefix, BgpRibTreebitmapEntry::new());
-            }
-            self.treebitmap
-                .exact_match_mut(prefix)
-                .unwrap()
-                .insert(router_mask, route);
-        } else {
-            error!("Invalid prefix: {}", route.prefix);
+        if self.treebitmap.exact_match(route.prefix).is_none() {
+            self.treebitmap.insert(route.prefix, BgpRibTreebitmapEntry::new());
         }
+        self.treebitmap
+            .exact_match_mut(route.prefix)
+            .unwrap()
+            .insert(router_mask, route);
     }
     pub fn update_routes(&mut self, routes: &Vec<Route>, id: &Uuid) {
         for route in routes {
@@ -203,7 +199,7 @@ mod tests {
         let id2 = Uuid::new_v4();
         rib.update_route(
             &Route {
-                prefix: "1.1.1.1/32".to_string(),
+                prefix: IpNetwork::from_str_truncate("1.1.1.1/32").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
                 as_path: vec![
                     PathElement::ASN(1),
@@ -216,7 +212,7 @@ mod tests {
         );
         rib.update_route(
             &Route {
-                prefix: "2.2.0.0/8".to_string(),
+                prefix: IpNetwork::from_str_truncate("2.2.0.0/8").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
                 as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
                 ..Default::default()
@@ -225,7 +221,7 @@ mod tests {
         );
         rib.update_route(
             &Route {
-                prefix: "2.2.0.0/8".to_string(),
+                prefix: IpNetwork::from_str_truncate("2.2.0.0/8").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
                 as_path: vec![PathElement::ASN(1), PathElement::ASN(40)],
                 ..Default::default()
@@ -234,7 +230,7 @@ mod tests {
         );
         rib.update_route(
             &Route {
-                prefix: "2.2.1.3/32".to_string(),
+                prefix: IpNetwork::from_str_truncate("2.2.1.3/32").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
                 as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
                 ..Default::default()
@@ -243,7 +239,7 @@ mod tests {
         );
         rib.update_route(
             &Route {
-                prefix: "2.2.1.3/32".to_string(),
+                prefix: IpNetwork::from_str_truncate("2.2.1.3/32").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
                 as_path: vec![PathElement::ASN(1), PathElement::ASN(4)],
                 ..Default::default()
@@ -285,7 +281,7 @@ mod tests {
         let mut rib = BgpRib::new();
         let id = Uuid::new_v4();
         let route_insert = Route {
-            prefix: "1.1.1.0/24".to_string(),
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
             next_hop: "192.168.1.1".to_string(),
             as_path: vec![
                 PathElement::ASN(1),
@@ -308,7 +304,7 @@ mod tests {
 
         let mask1 = RouterMask(0b001);
         let route1 = Route {
-            prefix: "1.1.1.0/24".to_string(),
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
             next_hop: "192.168.1.1".to_string(),
             as_path: vec![
                 PathElement::ASN(1),
@@ -319,14 +315,14 @@ mod tests {
         };
         let mask2 = RouterMask(0b010);
         let route2 = Route {
-            prefix: "1.1.1.0/24".to_string(),
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
             next_hop: "192.168.10.1".to_string(),
             as_path: vec![PathElement::ASN(5), PathElement::ASN(3)],
             ..Default::default()
         };
         let mask3 = mask2.clone();
         let route3 = Route {
-            prefix: "1.1.1.0/24".to_string(),
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
             next_hop: "192.168.20.1".to_string(),
             as_path: vec![
                 PathElement::ASN(15),

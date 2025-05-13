@@ -1,4 +1,6 @@
+use ip_network::IpNetwork;
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -8,9 +10,10 @@ pub enum PathElement {
 }
 pub type Path = Vec<PathElement>;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Route {
-    pub prefix: String,
+    pub peer: IpAddr,
+    pub prefix: IpNetwork,
     pub next_hop: String,
     pub as_path: Path,
 }
@@ -18,5 +21,20 @@ pub struct Route {
 impl Route {
     pub fn new() -> Self {
         Default::default()
+    }
+
+    pub fn is_default(&self) -> bool {
+        self == &Route::default()
+    }
+}
+
+impl Default for Route {
+    fn default() -> Self {
+        Route {
+            peer: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            prefix: IpNetwork::new(Ipv4Addr::new(0, 0, 0, 0), 0).unwrap(),
+            next_hop: "".to_string(),
+            as_path: Path::new(),
+        }
     }
 }

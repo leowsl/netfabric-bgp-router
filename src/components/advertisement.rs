@@ -1,6 +1,7 @@
 use crate::components::ris_live_data::RisLiveData;
 use crate::components::route::{Path, Route};
 use crate::utils::message_bus::Message;
+use ip_network::IpNetwork;
 use log::warn;
 use serde::{Deserialize, Serialize};
 
@@ -67,11 +68,17 @@ impl Advertisement {
         if let Some(announcements) = &self.announcements {
             for announcement in announcements.iter() {
                 for prefix in announcement.prefixes.iter() {
+                    if let (Ok(peer), Ok(prefix)) =
+                        (self.peer.parse(), IpNetwork::from_str_truncate(prefix))
+                    {
                     routes.push(Route {
+                            peer: peer,
+                            prefix: prefix,
                         next_hop: announcement.next_hop.clone(),
-                        prefix: prefix.clone(),
                         as_path: self.path.clone().unwrap_or_default(),
+                            ..Default::default()
                     });
+                    }
                 }
             }
         }
@@ -89,7 +96,7 @@ impl From<RisLiveData> for Advertisement {
     fn from(ris_live_data: RisLiveData) -> Self {
         Self {
             timestamp: ris_live_data.timestamp,
-            peer: ris_live_data.peer,
+            peer: ris_live_data.peer.parse().unwrap(),
             peer_asn: ris_live_data.peer_asn,
             id: ris_live_data.id,
             host: ris_live_data.host,

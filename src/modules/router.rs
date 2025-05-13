@@ -243,6 +243,7 @@ mod tests {
         use crate::components::advertisement::{AdvertisementType, Announcement};
         use crate::components::route::PathElement;
         use crate::utils::message_bus::Message;
+        use ip_network::IpNetwork;
         use std::net::IpAddr;
         use std::net::Ipv4Addr;
 
@@ -301,7 +302,7 @@ mod tests {
         let routes =
             rib.get_routes_for_router(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), &router_id);
         assert!(routes.len() == 1);
-        assert!(routes[0].prefix == "192.168.1.0/24");
+        assert!(routes[0].prefix == IpNetwork::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap());
         assert!(routes[0].next_hop == "192.168.1.1");
         assert!(routes[0].as_path == vec![PathElement::ASN(1), PathElement::ASN(2)]);
         Ok(())

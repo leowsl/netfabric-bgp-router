@@ -60,15 +60,10 @@ impl FilterIpNetworkBlacklist {
 }
 impl Filter<Route> for FilterIpNetworkBlacklist {
     fn filter(&self, route: &mut Route) -> bool {
-        if let Ok(other_net) = IpNetwork::from_str_truncate(&route.prefix) {
-            if self.ip_network.netmask() <= other_net.netmask() {
-                self.ip_network.contains(other_net.network_address())
-            } else {
-                other_net.contains(self.ip_network.network_address())
-            }
+        if self.ip_network.netmask() <= route.prefix.netmask() {
+            self.ip_network.contains(route.prefix.network_address())
         } else {
-            error!("Invalid IP address: {}", route.prefix);
-            return false;
+            route.prefix.contains(self.ip_network.network_address())
         }
     }
 }
