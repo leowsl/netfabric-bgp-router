@@ -1,8 +1,8 @@
 use netfabric_bgp::components::advertisement::AdvertisementType;
+use netfabric_bgp::modules::network::NetworkManagerError;
 use netfabric_bgp::utils::message_bus::Message;
 use netfabric_bgp::utils::state_machine::{StateMachine, StateMachineError};
 use netfabric_bgp::utils::thread_manager::ThreadManager;
-use netfabric_bgp::modules::network::NetworkManagerError;
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -14,7 +14,7 @@ fn test_message_bus() -> Result<(), String> {
     let thread_manager = ThreadManager::new();
     let id = Uuid::new_v4();
 
-    let (tx, rx) = if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
+    let (_tx, _rx) = if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
         message_bus
             .create_channel_with_uuid(1, id)
             .map_err(|e| format!("Failed to create channel: {:?}", e))?;
@@ -29,6 +29,10 @@ fn test_message_bus() -> Result<(), String> {
     } else {
         return Err("Failed to lock message bus".to_string());
     };
+
+    let (tx, rx) = thread_manager
+        .get_message_bus_channel_pair(1)
+        .map_err(|e| format!("Failed to get message bus channel pair: {:?}", e))?;
 
     let sent_msg = TestMessage("Hello, world!".to_string());
     tx.send(Box::new(sent_msg.clone()))
@@ -51,41 +55,23 @@ fn test_message_bus() -> Result<(), String> {
 
 #[test]
 fn test_live_bgp_parser() -> Result<(), StateMachineError> {
-    use netfabric_bgp::modules::live_bgp_parser::LiveBgpParser;
-    use netfabric_bgp::modules::router::{Router, RouterChannel, RouterConnection};
-    use netfabric_bgp::utils::thread_manager::ThreadManagerError;
+    use netfabric_bgp::modules::live_bgp_parser::create_parser_router_pair;
+    use netfabric_bgp::utils::state_machine::StateMachine;
 
     let mut thread_manager = ThreadManager::new();
 
-    // Create channel for BGP messages
-    let (tx, rx) = if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
-        let channel_id = message_bus.create_channel(10000).unwrap();
-        (
-            message_bus.publish(channel_id)?,
-            message_bus.subscribe(channel_id)?,
-        )
-    } else {
-        return Err(StateMachineError::ThreadManagerError(
-            ThreadManagerError::LockError("Failed to lock message bus.".to_string()),
-        ));
-    };
+    // Create parser and router
+    let (parser, router) = create_parser_router_pair(&mut thread_manager, 10, vec![])?;
+    let (mut parser_sm, mut router_sm) = (
+        StateMachine::new(&mut thread_manager, parser)?,
+        StateMachine::new(&mut thread_manager, router)?,
+    );
 
-    // Create and start router
-    let mut router = Router::new(Uuid::new_v4());
-    let router_connection = RouterConnection {
-        channel: RouterChannel::Inbound(rx),
-        filters: Vec::new(),
-    };
-    router.add_connection(router_connection);
-    let mut router_state_machine = StateMachine::new(&mut thread_manager, router)?;
-    let router_thread_id = router_state_machine.get_runner_thread_id();
-    router_state_machine.start()?;
-
-    // Create and start BGP parser
-    let live_bgp_parser = LiveBgpParser::new(tx);
-    let mut parser_state_machine = StateMachine::new(&mut thread_manager, live_bgp_parser)?;
-    let parser_thread_id = parser_state_machine.get_runner_thread_id();
-    parser_state_machine.start()?;
+    // Start State Machines
+    router_sm.start()?;
+    parser_sm.start()?;
+    let parser_thread_id = parser_sm.get_runner_thread_id();
+    let router_thread_id = router_sm.get_runner_thread_id();
 
     assert!(
         thread_manager.is_thread_running(&router_thread_id)?,
@@ -99,8 +85,8 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
     std::thread::sleep(std::time::Duration::from_secs(5));
 
     // Stop both state machines
-    parser_state_machine.stop()?;
-    router_state_machine.stop()?;
+    parser_sm.stop()?;
+    router_sm.stop()?;
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -124,15 +110,7 @@ fn test_router() -> Result<(), StateMachineError> {
     let mut thread_manager = ThreadManager::new();
 
     let mut router = Router::new(Uuid::new_v4());
-    let (tx, rx) = if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
-        let channel_id = message_bus.create_channel(1000).unwrap();
-        (
-            message_bus.publish(channel_id).unwrap(),
-            message_bus.subscribe(channel_id).unwrap(),
-        )
-    } else {
-        panic!("Failed to lock message bus");
-    };
+    let (tx, rx) = thread_manager.get_message_bus_channel_pair(1000)?;
     let router_connection = RouterConnection {
         channel: RouterChannel::Inbound(rx),
         filters: Vec::new(),
@@ -195,48 +173,27 @@ fn test_router() -> Result<(), StateMachineError> {
 
 #[test]
 fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), NetworkManagerError> {
-    use netfabric_bgp::modules::live_bgp_parser::LiveBgpParser;
+    use netfabric_bgp::modules::live_bgp_parser::create_parser_router_pair;
     use netfabric_bgp::modules::network::NetworkManager;
-    use netfabric_bgp::modules::router::{Router, RouterChannel, RouterConnection};
     use netfabric_bgp::utils::state_machine::StateMachine;
-    use uuid::Uuid;
 
     let thread_manager = &mut ThreadManager::new();
 
-    // Channel for the bgp parser
-    let (bgp_parser_tx, bgp_parser_rx) =
-        if let Ok(mut message_bus) = thread_manager.lock_message_bus() {
-            let channel_id = message_bus.create_channel(10000).unwrap();
-            (
-                message_bus.publish(channel_id).unwrap(),
-                message_bus.subscribe(channel_id).unwrap(),
-            )
-        } else {
-            panic!("Failed to lock message bus");
-        };
-
-    // Bgp parser state machine
-    let bgp_parser = LiveBgpParser::new(bgp_parser_tx);
-    let mut bgp_parser_state_machine = StateMachine::new(thread_manager, bgp_parser)?;
-    bgp_parser_state_machine.start()?;
-
-    // Router state machine
-    let mut router = Router::new(Uuid::new_v4());
-    let router_connection = RouterConnection {
-        channel: RouterChannel::Inbound(bgp_parser_rx),
-        filters: Vec::new(),
-    };
-    router.add_connection(router_connection);
+    // Live Bgp Parser
+    let (bgp_live_parser, bgp_live_parser_router) =
+        create_parser_router_pair(thread_manager, 500, vec![])?;
+    let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
 
     // Create and start network
     let mut network_manager = NetworkManager::new(thread_manager);
-    network_manager.insert_router(router);
+    network_manager.insert_router(bgp_live_parser_router);
     network_manager.start()?;
+    bgp_live_sm.start()?;
 
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    std::thread::sleep(std::time::Duration::from_secs(2));
 
     // Stop the network
-    bgp_parser_state_machine.stop()?;
+    bgp_live_sm.stop()?;
     network_manager.stop()?;
     let (prefix_count, rib_entry_count) = network_manager.get_rib().get_prefix_count();
     assert!(prefix_count > 0);

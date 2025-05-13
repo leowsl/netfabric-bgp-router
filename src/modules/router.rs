@@ -5,6 +5,7 @@ use crate::components::route::Route;
 use crate::utils::filter_utils::apply_filters;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
+use crate::utils::mutex_utils::TryLockWithTimeout;
 use crate::utils::state_machine::{State, StateTransition};
 use log::{info, warn};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
@@ -21,8 +22,19 @@ pub struct RouterConnection {
     pub filters: Vec<Box<dyn Filter<Advertisement>>>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct RouterOptions {
+    pub use_bgp_rib: bool,
+}
+impl Default for RouterOptions {
+    fn default() -> Self {
+        Self { use_bgp_rib: true }
+    }
+}
+
 pub struct Router {
     pub id: Uuid,
+    pub options: RouterOptions,
     connections: Vec<Arc<Mutex<RouterConnection>>>,
     bgp_rib: Option<Arc<Mutex<BgpRib>>>,
 }
@@ -31,9 +43,20 @@ impl Router {
     pub fn new(id: Uuid) -> Self {
         Router {
             id,
+            options: Default::default(),
             connections: Vec::new(),
             bgp_rib: None,
         }
+    }
+
+    pub fn set_options(&mut self, options: RouterOptions) {
+        self.options = options;
+    }
+
+    pub fn new_with_options(id: Uuid, options: RouterOptions) -> Self {
+        let mut router = Self::new(id);
+        router.set_options(options);
+        return router;
     }
 
     pub fn add_connection(&mut self, connection: RouterConnection) {
@@ -45,8 +68,9 @@ impl Router {
         rib.lock().unwrap().register_router(&self.id);
     }
 
-    pub fn process_incoming_advertisements(&mut self) -> Result<Vec<Advertisement>, RouterError> {
-        let mut advertisements: Vec<Advertisement> = Vec::new();
+    pub fn get_incoming_advertisements(&mut self) -> Result<Vec<Advertisement>, RouterError> {
+        const MAX_BATCH_SIZE: usize = 1000;
+        let mut advertisements: Vec<Advertisement> = Vec::with_capacity(MAX_BATCH_SIZE);
         for connection_mutex in &self.connections {
             let connection = connection_mutex.try_lock()?;
             match &connection.channel {
@@ -56,21 +80,26 @@ impl Router {
                         if let Some(mut ad) = msg.cast::<Advertisement>().cloned() {
                             if apply_filters(&mut ad, &connection.filters).is_some() {
                                 advertisements.push(ad);
+                                if advertisements.len() >= MAX_BATCH_SIZE {
+                                    break;
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        let routes: Vec<Route> = advertisements
-            .iter()
-            .flat_map(|ad| ad.get_routes())
-            .collect();
-        self.bgp_rib
-            .as_ref()
-            .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?
-            .try_lock()?
-            .update_routes(&routes, &self.id);
+        if self.options.use_bgp_rib {
+            let routes: Vec<Route> = advertisements
+                .iter()
+                .flat_map(|ad| ad.get_routes())
+                .collect();
+            self.bgp_rib
+                .as_ref()
+                .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?
+                .try_lock_with_timeout(std::time::Duration::from_millis(100))?
+                .update_routes(&routes, &self.id);
+        }
         Ok(advertisements)
     }
 
@@ -85,7 +114,7 @@ impl Router {
                 RouterChannel::Outbound(sender) => {
                     for advertisement in &advertisements {
                         sender
-                            .send(Box::new(advertisement.clone()))
+                            .try_send(Box::new(advertisement.clone()))
                             .map_err(|e| RouterError::MessageBusError(e.to_string()))?;
                     }
                 }
@@ -97,7 +126,7 @@ impl Router {
 impl State for Router {
     fn work(&mut self) -> StateTransition {
         // Process incoming advertisements
-        let routes = match self.process_incoming_advertisements() {
+        let routes = match self.get_incoming_advertisements() {
             Ok(routes) => routes,
             Err(e) => {
                 warn!("Error processing incoming advertisements: {}", e);
@@ -239,8 +268,6 @@ mod tests {
 
         let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
         state_machine.start()?;
-
-        info!("Starting to send advertisements");
 
         if let Ok(message_bus) = thread_manager.lock_message_bus() {
             let sender = message_bus.publish(channel_id)?;

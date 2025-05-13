@@ -17,6 +17,11 @@ where
 pub struct FilterHost {
     host: String,
 }
+impl FilterHost {
+    pub fn new(host: String) -> Self {
+        Self { host }
+    }
+}
 impl Filter<Advertisement> for FilterHost {
     fn filter(&self, ad: &mut Advertisement) -> bool {
         ad.host == self.host
@@ -26,7 +31,6 @@ impl Filter<Advertisement> for FilterHost {
 pub struct FilterOwnAS {
     asn: u64,
 }
-
 impl FilterOwnAS {
     pub fn new(asn: u64) -> Self {
         Self { asn }
@@ -49,7 +53,11 @@ impl Filter<Advertisement> for FilterOwnAS {
 pub struct FilterIpNetworkBlacklist {
     ip_network: IpNetwork,
 }
-
+impl FilterIpNetworkBlacklist {
+    pub fn new(ip_network: IpNetwork) -> Self {
+        Self { ip_network }
+    }
+}
 impl Filter<Route> for FilterIpNetworkBlacklist {
     fn filter(&self, route: &mut Route) -> bool {
         if let Ok(other_net) = IpNetwork::from_str_truncate(&route.prefix) {
@@ -65,11 +73,10 @@ impl Filter<Route> for FilterIpNetworkBlacklist {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_filter_own_as() {
         let filter = FilterOwnAS::new(10);
@@ -79,7 +86,7 @@ mod tests {
                 PathElement::ASN(2),
                 PathElement::ASN(3),
                 PathElement::ASSet(vec![100, 101, 102]),
-                ]),
+            ]),
             ..Default::default()
         };
         let mut ad2 = Advertisement {
@@ -88,7 +95,7 @@ mod tests {
                 PathElement::ASN(2),
                 PathElement::ASN(10),
                 PathElement::ASSet(vec![100, 101, 102]),
-                ]),
+            ]),
             ..Default::default()
         };
         let mut ad3 = Advertisement {
@@ -97,11 +104,26 @@ mod tests {
                 PathElement::ASN(2),
                 PathElement::ASN(3),
                 PathElement::ASSet(vec![10, 101, 102]),
-                ]),
+            ]),
             ..Default::default()
         };
         assert!(filter.filter(&mut ad1));
         assert!(!filter.filter(&mut ad2));
         assert!(!filter.filter(&mut ad3));
+    }
+
+    #[test]
+    fn test_filter_host() {
+        let filter = FilterHost::new("192.168.1.1".to_string());
+        let mut ad1 = Advertisement {
+            host: "192.168.1.1".to_string(),
+            ..Default::default()
+        };
+        let mut ad2 = Advertisement {
+            host: "192.168.1.2".to_string(),
+            ..Default::default()
+        };
+        assert!(filter.filter(&mut ad1));
+        assert!(!filter.filter(&mut ad2));
     }
 }

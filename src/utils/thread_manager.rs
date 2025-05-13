@@ -1,12 +1,14 @@
-use crate::utils::message_bus::{Message, MessageBus};
+use crate::utils::message_bus::{
+    Message, MessageBus, MessageBusError, MessageReceiver, MessageSender,
+};
 use log::error;
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::mpsc::SendError;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use thiserror::Error;
 use uuid::Uuid;
-use std::any::Any;
 
 #[derive(Error, Debug)]
 pub enum ThreadManagerError {
@@ -16,6 +18,14 @@ pub enum ThreadManagerError {
     SendError(#[from] SendError<Box<dyn Message>>),
     #[error("Failed to lock mutex: {0}")]
     LockError(String),
+    #[error("Message bus operation failed: {0}")]
+    MessageBusError(String),
+}
+
+impl From<MessageBusError> for ThreadManagerError {
+    fn from(value: MessageBusError) -> Self {
+        Self::MessageBusError(value.to_string())
+    }
 }
 
 pub type ThreadResult<T> = Result<T, ThreadManagerError>;
@@ -64,15 +74,15 @@ impl ThreadManager {
             })?
             .downcast::<T>()
             .map(|boxed| *boxed)
-            .map_err(|_| ThreadManagerError::ThreadError("Failed to downcast thread result".to_string()))
+            .map_err(|_| {
+                ThreadManagerError::ThreadError("Failed to downcast thread result".to_string())
+            })
     }
 
     pub fn join_all(&mut self) -> ThreadResult<()> {
-        self.thread_handles
-            .drain()
-            .for_each(|(_, handle)| {
-                handle.join().unwrap();
-            });
+        self.thread_handles.drain().for_each(|(_, handle)| {
+            handle.join().unwrap();
+        });
         Ok(())
     }
 
@@ -81,8 +91,25 @@ impl ThreadManager {
             ThreadManagerError::LockError(format!("Failed to lock message bus: {}", e))
         })
     }
-}
 
+    pub fn get_message_bus_channel_pair(
+        &self,
+        channel_capacity: usize,
+    ) -> ThreadResult<(MessageSender, MessageReceiver)> {
+        let (tx, rx) = if let Ok(mut message_bus) = self.lock_message_bus() {
+            let channel_id = message_bus.create_channel(channel_capacity)?;
+            (
+                message_bus.publish(channel_id)?,
+                message_bus.subscribe(channel_id)?,
+            )
+        } else {
+            return Err(ThreadManagerError::LockError(
+                "Failed to lock message bus".to_string(),
+            ));
+        };
+        return Ok((tx, rx));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -124,7 +151,6 @@ mod tests {
             x
         };
 
-
         // With downcasting
         let thread2 = thread_manager.start_thread(x)?;
         let result2 = thread_manager.join_thread::<i32>(&thread2)?;
@@ -147,7 +173,7 @@ mod tests {
         thread_manager.join_all()?;
         assert!(*x.lock().unwrap() == 10);
         Ok(())
-    }    
+    }
 
     #[test]
     fn test_thread_manager_lock_message_bus() -> Result<(), ThreadManagerError> {
@@ -173,6 +199,13 @@ mod tests {
         thread_manager.join_thread(&thread_id)?;
         assert!(!thread_manager.is_thread_running(&thread_id)?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_message_bus_channel_pair() -> Result<(), ThreadManagerError> {
+        let thread_manager = ThreadManager::new();
+        let (_tx, _rx) = thread_manager.get_message_bus_channel_pair(1)?;
         Ok(())
     }
 }

@@ -1,7 +1,10 @@
 use crate::components::advertisement::Advertisement;
+use crate::components::filters::Filter;
 use crate::components::ris_live_data::RisLiveMessage;
+use crate::modules::router::{Router, RouterChannel, RouterConnection};
 use crate::utils::message_bus::{Message, MessageSender};
 use crate::utils::state_machine::{State, StateTransition};
+use crate::utils::thread_manager::{ThreadManager, ThreadManagerError};
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use log::{error, info};
@@ -10,6 +13,7 @@ use thiserror::Error;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 static RIS_STREAM_URL: &str =
     "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
@@ -127,8 +131,9 @@ impl State for LiveBgpParser {
         match self.process_buffer() {
             Ok(_) => { /*info!("Processing Buffer")*/ }
             Err(e) => {
-                error!("Couldn't process buffer! {}", e);
+                error!("Couldn't process buffer! {}.Timeout for 1 sec to give routers time to catch up.", e);
                 self.stop_stream().unwrap();
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 match self.restart_policy {
                     RestartPolicy::StopOnError => return StateTransition::Stop,
                     RestartPolicy::RestartOnError => return StateTransition::Continue,
@@ -142,6 +147,21 @@ impl State for LiveBgpParser {
             error!("Couldn't properly cleanup stream!");
         }
     }
+}
+
+pub fn create_parser_router_pair(
+    thread_manager: &mut ThreadManager,
+    channel_capacity: usize,
+    filters: Vec<Box<dyn Filter<Advertisement>>>,
+) -> Result<(LiveBgpParser, Router), ThreadManagerError> {
+    let (tx, rx) = thread_manager.get_message_bus_channel_pair(channel_capacity)?;
+    let parser = LiveBgpParser::new(tx);
+    let mut router = Router::new(Uuid::new_v4());
+    router.add_connection(RouterConnection {
+        channel: RouterChannel::Inbound(rx),
+        filters,
+    });
+    Ok((parser, router))
 }
 
 // Error definitions

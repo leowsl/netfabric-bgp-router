@@ -1,11 +1,12 @@
-use std::collections::HashMap;
-
+use crate::components::advertisement::Advertisement;
 use crate::components::bgp_rib::BgpRib;
+use crate::components::filters::Filter;
 use crate::modules::router::{Router, RouterChannel, RouterConnection};
-use crate::utils::message_bus::{MessageReceiver, MessageSender, MessageBusError};
+use crate::utils::message_bus::{MessageBusError, MessageReceiver, MessageSender};
 use crate::utils::state_machine::{StateMachine, StateMachineError};
-use crate::utils::thread_manager::ThreadManager;
+use crate::utils::thread_manager::{ThreadManager, ThreadManagerError};
 use log::info;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -29,6 +30,7 @@ impl<'a> NetworkManager<'a> {
     pub fn get_rib_mutex(&self) -> std::sync::MutexGuard<'_, BgpRib> {
         self.rib.lock().unwrap()
     }
+
     pub fn get_rib(&self) -> BgpRib {
         self.rib.lock().unwrap().clone()
     }
@@ -47,6 +49,10 @@ impl<'a> NetworkManager<'a> {
         }
     }
 
+    pub fn get_router_mut(&mut self, id: &Uuid) -> Option<&mut Router> {
+        self.routers.get_mut(id)
+    }
+
     pub fn connect_router_pair(
         &mut self,
         router_id: &Uuid,
@@ -61,15 +67,9 @@ impl<'a> NetworkManager<'a> {
             )));
         };
 
-        let (tx, rx) = if let Ok(mut message_bus) = self.thread_manager.lock_message_bus() {
-            let channel_id = message_bus.create_channel(link_buffer_size).unwrap();
-            (
-                message_bus.publish(channel_id).unwrap(),
-                message_bus.subscribe(channel_id).unwrap(),
-            )
-        } else {
-            panic!("Failed to lock message bus");
-        };
+        let (tx, rx) = self
+            .thread_manager
+            .get_message_bus_channel_pair(link_buffer_size)?;
 
         router.add_connection(RouterConnection {
             channel: RouterChannel::Outbound(tx),
@@ -90,20 +90,18 @@ impl<'a> NetworkManager<'a> {
         &mut self,
         router_id: &Uuid,
         link_buffer_size: usize,
+        filters: Vec<Box<dyn Filter<Advertisement>>>,
     ) -> Result<MessageReceiver, NetworkManagerError> {
         let router = self
             .routers
             .get_mut(router_id)
             .ok_or(NetworkManagerError::RouterNotFound(*router_id))?;
-        let (tx, rx) = if let Ok(mut mb) = self.thread_manager.lock_message_bus() {
-            let channel_id = mb.create_channel(link_buffer_size)?;
-            (mb.publish(channel_id)?, mb.subscribe(channel_id)?)
-        } else {
-            panic!("Failed to lock message bus");
-        };
+        let (tx, rx) = self
+            .thread_manager
+            .get_message_bus_channel_pair(link_buffer_size)?;
         router.add_connection(RouterConnection {
             channel: RouterChannel::Outbound(tx),
-            filters: Vec::new(),
+            filters,
         });
         Ok(rx)
     }
@@ -112,20 +110,18 @@ impl<'a> NetworkManager<'a> {
         &mut self,
         router_id: &Uuid,
         link_buffer_size: usize,
+        filters: Vec<Box<dyn Filter<Advertisement>>>,
     ) -> Result<MessageSender, NetworkManagerError> {
         let router = self
             .routers
             .get_mut(router_id)
             .ok_or(NetworkManagerError::RouterNotFound(*router_id))?;
-        let (tx, rx) = if let Ok(mut mb) = self.thread_manager.lock_message_bus() {
-            let channel_id = mb.create_channel(link_buffer_size)?;
-            (mb.publish(channel_id)?, mb.subscribe(channel_id)?)
-        } else {
-            panic!("Failed to lock message bus");
-        };
+        let (tx, rx) = self
+            .thread_manager
+            .get_message_bus_channel_pair(link_buffer_size)?;
         router.add_connection(RouterConnection {
             channel: RouterChannel::Inbound(rx),
-            filters: Vec::new(),
+            filters,
         });
         Ok(tx)
     }
@@ -162,6 +158,7 @@ pub enum NetworkManagerError {
     ConnectionError(String),
     StateMachineError(StateMachineError),
     MessageBusError(MessageBusError),
+    ThreadManagerError(ThreadManagerError),
 }
 
 impl From<StateMachineError> for NetworkManagerError {
@@ -176,6 +173,12 @@ impl From<MessageBusError> for NetworkManagerError {
     }
 }
 
+impl From<ThreadManagerError> for NetworkManagerError {
+    fn from(error: ThreadManagerError) -> Self {
+        NetworkManagerError::ThreadManagerError(error)
+    }
+}
+
 impl std::fmt::Display for NetworkManagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -186,6 +189,7 @@ impl std::fmt::Display for NetworkManagerError {
             NetworkManagerError::ConnectionError(msg) => write!(f, "Connection error: {}", msg),
             NetworkManagerError::StateMachineError(e) => write!(f, "State machine error: {}", e),
             NetworkManagerError::MessageBusError(e) => write!(f, "Message bus error: {}", e),
+            NetworkManagerError::ThreadManagerError(e) => write!(f, "Thread manager error: {}", e),
         }
     }
 }
@@ -209,12 +213,10 @@ mod tests {
         network.create_router(r1);
         network.create_router(r2);
 
-        network
-            .connect_router_pair(&r1, &r2, true, 10)
-            .unwrap();
+        network.connect_router_pair(&r1, &r2, true, 10).unwrap();
 
-        let rx = network.create_router_rx(&r1, 10).unwrap();
-        let tx = network.create_router_tx(&r2, 10).unwrap();
+        let rx = network.create_router_rx(&r1, 10, vec![]).unwrap();
+        let tx = network.create_router_tx(&r2, 10, vec![]).unwrap();
 
         let ad = Advertisement {
             timestamp: std::time::Instant::now().elapsed().as_secs_f64(),
