@@ -63,8 +63,39 @@ impl BgpRib {
         self.treebitmap.len()
     }
 
+    pub fn get_router_ids(&self) -> Vec<Uuid> {
+        self.router_mask_map.get_all_ids()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (IpNetwork, &BgpRibTreebitmapEntry)> {
         self.treebitmap.iter()
+    }
+
+    pub fn get_total_route_count(&self) -> u64 {
+        self.treebitmap
+            .iter()
+            .map(|(_, entry)| entry.len() as u64)
+            .sum()
+    }
+
+    pub fn get_routes_count_with_mask(&self, router_mask: &Uuid) -> (u64, u64, u64) {
+        let mut route_counter: u64 = 0;
+        let mut ipv4_counter: u64 = 0;
+        let mut ipv6_counter: u64 = 0;
+        let router_mask = self.router_mask_map.try_get(router_mask);
+        self.treebitmap.iter().for_each(|(prefix, entry)| {
+            let entry_len = entry.get_with_mask(router_mask).len() as u64;
+            route_counter += entry_len;
+            if entry_len > 0 {
+                if prefix.is_ipv4() {
+                    ipv4_counter += 1;
+                }
+                if prefix.is_ipv6() {
+                    ipv6_counter += 1;
+                }
+            }
+        });
+        (route_counter, ipv4_counter, ipv6_counter)
     }
 
     pub fn export_to_file(&self, file_path: &str) {
@@ -148,6 +179,7 @@ impl Clone for BgpRib {
         for (network, entry) in self.treebitmap.iter() {
             new_rib.treebitmap.insert(network, entry.clone());
         }
+        new_rib.router_mask_map = self.router_mask_map.clone();
         // new_rib.best_routes = self.best_routes.clone();
         return new_rib;
     }

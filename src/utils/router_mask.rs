@@ -26,6 +26,7 @@ impl RouterMask {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RouterMaskMap {
     default: RouterMask,
     mask: RouterMask,
@@ -68,6 +69,9 @@ impl RouterMaskMap {
     pub fn len(&self) -> usize {
         self.map.len()
     }
+    pub fn get_all_ids(&self) -> Vec<Uuid> {
+        self.map.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]
@@ -102,5 +106,15 @@ mod tests {
         assert_eq!(router_mask_map.get(&r1), &RouterMask(0b1));
         router_mask_map.remove(&r1);
         assert_eq!(router_mask_map.get_all(), &RouterMask(0));
+    }
+
+    #[test]
+    fn test_router_mask_map_get_all_ids() {
+        let mut router_mask_map = RouterMaskMap::new();
+        let r1 = Uuid::new_v4();
+        let r2 = Uuid::new_v4();
+        let _ = router_mask_map.get(&r1);
+        let _ = router_mask_map.get(&r2);
+        assert_eq!(router_mask_map.get_all_ids().sort(), vec![r1, r2].sort());
     }
 }

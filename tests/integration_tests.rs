@@ -195,7 +195,7 @@ fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), Networ
     // Stop the network
     bgp_live_sm.stop()?;
     network_manager.stop()?;
-    let (prefix_count, rib_entry_count) = network_manager.get_rib().get_prefix_count();
+    let (prefix_count, rib_entry_count) = network_manager.get_rib_clone().get_prefix_count();
     assert!(prefix_count > 0);
     assert!(rib_entry_count > 0);
     Ok(())

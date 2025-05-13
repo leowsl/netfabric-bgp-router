@@ -27,11 +27,11 @@ impl<'a> NetworkManager<'a> {
         }
     }
 
-    pub fn get_rib_mutex(&self) -> std::sync::MutexGuard<'_, BgpRib> {
+    pub fn get_rib_lock(&self) -> std::sync::MutexGuard<'_, BgpRib> {
         self.rib.lock().unwrap()
     }
 
-    pub fn get_rib(&self) -> BgpRib {
+    pub fn get_rib_clone(&self) -> BgpRib {
         self.rib.lock().unwrap().clone()
     }
 

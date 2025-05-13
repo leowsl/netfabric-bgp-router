@@ -11,6 +11,7 @@ fn test_create_and_start_network(
     use netfabric_bgp::modules::network::NetworkManager;
     use netfabric_bgp::modules::router::RouterOptions;
     use netfabric_bgp::utils::state_machine::StateMachine;
+    use netfabric_bgp::utils::pretty_prints::bgp_rib_overview;
     use uuid::Uuid;
 
     // ids
@@ -25,9 +26,11 @@ fn test_create_and_start_network(
     let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
     let router0_id = bgp_live_parser_router.id.clone();
     bgp_live_parser_router.set_options(RouterOptions {
-        use_bgp_rib: false,
+        use_bgp_rib: true,
         ..Default::default()
     });
+    println!("Router ID Mapping:\nRouter 0: {:?}\nRouter 1: {:?}\nRouter 2: {:?}\nRouter 3: {:?}", router0_id, router1_id, router2_id, router3_id);
+
 
     // Create and start network
     let mut network_manager = NetworkManager::new(thread_manager);
@@ -46,16 +49,13 @@ fn test_create_and_start_network(
     network_manager.start()?;
     bgp_live_sm.start()?;
 
-    std::thread::sleep(std::time::Duration::from_secs(60));
+    std::thread::sleep(std::time::Duration::from_secs(5));
 
     // Stop the network
     bgp_live_sm.stop()?;
     network_manager.stop()?;
-    network_manager.get_rib().export_to_file("./data/rib.json");
-    info!(
-        "Final Rib Size: {:?}",
-        network_manager.get_rib().get_prefix_count()
-    );
+    network_manager.get_rib_clone().export_to_file("./data/rib.json");
+    info!("{}", bgp_rib_overview(&network_manager.get_rib_clone()));
     Ok(())
 }
 
