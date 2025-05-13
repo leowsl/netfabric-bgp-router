@@ -90,15 +90,19 @@ impl Router {
             }
         }
         if self.options.use_bgp_rib {
-            let routes: Vec<Route> = advertisements
+            let announcements: Vec<Route> = advertisements
                 .iter()
-                .flat_map(|ad| ad.get_routes())
+                .flat_map(|ad| ad.get_announcements())
+                .collect();
+            let withdrawals: Vec<Route> = advertisements
+                .iter()
+                .flat_map(|ad| ad.get_withdrawals())
                 .collect();
             self.bgp_rib
                 .as_ref()
                 .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?
                 .try_lock_with_timeout(std::time::Duration::from_millis(100))?
-                .update_routes(&routes, &self.id);
+                .update_routes(&announcements, &withdrawals, &self.id);
         }
         Ok(advertisements)
     }

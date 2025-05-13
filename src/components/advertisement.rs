@@ -63,7 +63,7 @@ impl Advertisement {
         Default::default()
     }
 
-    pub fn get_routes(&self) -> Vec<Route> {
+    pub fn get_announcements(&self) -> Vec<Route> {
         let mut routes: Vec<Route> = Vec::new();
         if let Some(announcements) = &self.announcements {
             for announcement in announcements.iter() {
@@ -71,13 +71,13 @@ impl Advertisement {
                     if let (Ok(peer), Ok(prefix)) =
                         (self.peer.parse(), IpNetwork::from_str_truncate(prefix))
                     {
-                    routes.push(Route {
+                        routes.push(Route {
                             peer: peer,
                             prefix: prefix,
-                        next_hop: announcement.next_hop.clone(),
-                        as_path: self.path.clone().unwrap_or_default(),
+                            next_hop: announcement.next_hop.clone(),
+                            as_path: self.path.clone().unwrap_or_default(),
                             ..Default::default()
-                    });
+                        });
                     }
                 }
             }
@@ -86,7 +86,23 @@ impl Advertisement {
     }
 
     pub fn get_withdrawals(&self) -> Vec<Route> {
-        vec![]
+        let mut routes: Vec<Route> = Vec::new();
+        if let Some(withdrawals) = &self.withdrawals {
+            for withdrawal in withdrawals.iter() {
+                if let (Ok(peer), Ok(prefix)) =
+                    (self.peer.parse(), IpNetwork::from_str_truncate(&withdrawal))
+                {
+                    routes.push(Route {
+                        peer,
+                        prefix,
+                        next_hop: "".to_string(),
+                        as_path: self.path.clone().unwrap_or_default(),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        routes
     }
 }
 

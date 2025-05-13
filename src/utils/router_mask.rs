@@ -18,6 +18,9 @@ impl RouterMask {
     pub fn contains(&self, other: &Self) -> bool {
         other.0 != 0 && self.0 & other.0 == other.0
     }
+    pub fn remove(&mut self, other: &Self) {
+       self.0 &= !other.0;
+    }
     pub fn combine(&self, other: &Self) -> Self {
         Self(self.0 | other.0)
     }

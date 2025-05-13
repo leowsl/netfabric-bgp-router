@@ -13,20 +13,28 @@ impl BgpRibTreebitmapEntry {
     pub fn new() -> Self {
         Self(Vec::new())
     }
-    pub fn insert(&mut self, router: &RouterMask, route: &Route) {
+    pub fn insert(&mut self, router: RouterMask, route: Route) {
         if let Some((mask, _)) = self
             .0
             .iter_mut()
-            .find(|(_, other_route)| other_route == route)
+            .find(|(_, other_route)| other_route == &route)
         {
-            mask.combine_with(router);
+            mask.combine_with(&router);
         } else {
-            self.0.push((router.clone(), route.clone()));
+            self.0.push((router, route));
         }
     }
-    pub fn withdraw(&mut self, router: &RouterMask, route: &Route) {
-        self.0
-            .retain(|(mask, other_route)| route != other_route || mask.0 & router.0 != router.0);
+    pub fn withdraw(&mut self, mask: &RouterMask, route: &Route) {
+        self.0.retain(|(other_mask, other_route)| {
+            !(mask == other_mask
+                && route.peer == other_route.peer
+                && route.prefix == other_route.prefix)
+        });
+        self.0.iter_mut().for_each(|(other_mask, other_route)| {
+            if route.peer == other_route.peer && route.prefix == other_route.prefix {
+                other_mask.remove(mask);
+            }
+        });
     }
     pub fn get_with_mask(&self, router: &RouterMask) -> Vec<&Route> {
         self.0
@@ -152,19 +160,34 @@ impl BgpRib {
     //         .and_then(|router_map| router_map.get(router).cloned())
     // }
 
-    pub fn update_route(&mut self, route: &Route, id: &Uuid) {
+    pub fn insert_route(&mut self, route: &Route, id: &Uuid) {
         let router_mask = self.router_mask_map.get(id);
         if self.treebitmap.exact_match(route.prefix).is_none() {
-            self.treebitmap.insert(route.prefix, BgpRibTreebitmapEntry::new());
+            self.treebitmap
+                .insert(route.prefix, BgpRibTreebitmapEntry::new());
         }
         self.treebitmap
             .exact_match_mut(route.prefix)
             .unwrap()
-            .insert(router_mask, route);
+            .insert(router_mask.clone(), route.clone());
     }
-    pub fn update_routes(&mut self, routes: &Vec<Route>, id: &Uuid) {
-        for route in routes {
-            self.update_route(route, id);
+    pub fn remove_route(&mut self, route: &Route, id: &Uuid) {
+        let router_mask = self.router_mask_map.get(id);
+        if let Some(entry) = self.treebitmap.exact_match_mut(route.prefix) {
+            entry.withdraw(router_mask, route);
+        }
+    }
+    pub fn update_routes(
+        &mut self,
+        announcements: &Vec<Route>,
+        withdrawals: &Vec<Route>,
+        id: &Uuid,
+    ) {
+        for route in announcements {
+            self.insert_route(route, id);
+        }
+        for route in withdrawals {
+            self.remove_route(route, id);
         }
     }
 }
@@ -197,7 +220,7 @@ mod tests {
         let mut rib = BgpRib::new();
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
-        rib.update_route(
+        rib.insert_route(
             &Route {
                 prefix: IpNetwork::from_str_truncate("1.1.1.1/32").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
@@ -210,7 +233,7 @@ mod tests {
             },
             &id1,
         );
-        rib.update_route(
+        rib.insert_route(
             &Route {
                 prefix: IpNetwork::from_str_truncate("2.2.0.0/8").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
@@ -219,7 +242,7 @@ mod tests {
             },
             &id1,
         );
-        rib.update_route(
+        rib.insert_route(
             &Route {
                 prefix: IpNetwork::from_str_truncate("2.2.0.0/8").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
@@ -228,7 +251,7 @@ mod tests {
             },
             &id2,
         );
-        rib.update_route(
+        rib.insert_route(
             &Route {
                 prefix: IpNetwork::from_str_truncate("2.2.1.3/32").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
@@ -237,7 +260,7 @@ mod tests {
             },
             &id1,
         );
-        rib.update_route(
+        rib.insert_route(
             &Route {
                 prefix: IpNetwork::from_str_truncate("2.2.1.3/32").unwrap(),
                 next_hop: "192.168.1.1".to_string(),
@@ -290,7 +313,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        rib.update_route(&route_insert, &id);
+        rib.insert_route(&route_insert, &id);
 
         let route_match = rib.get_routes_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &id);
         assert_eq!(route_match.len(), 1);
@@ -334,10 +357,10 @@ mod tests {
         let mask4 = RouterMask(0b100);
         let route4 = route1.clone();
 
-        entry.insert(&mask1, &route1);
-        entry.insert(&mask2, &route2);
-        entry.insert(&mask3, &route3);
-        entry.insert(&mask4, &route4);
+        entry.insert(mask1.clone(), route1.clone());
+        entry.insert(mask2.clone(), route2.clone());
+        entry.insert(mask3.clone(), route3.clone());
+        entry.insert(mask4.clone(), route4.clone());
         assert_eq!(entry.len(), 3); // route 1 and 4 are stored in the same entry
 
         assert_eq!(
@@ -352,5 +375,55 @@ mod tests {
         );
         assert_eq!(entry.get_all(), vec![&route1, &route2, &route3]);
         assert_eq!(entry.get_with_mask(&mask1.combine(&mask4)), vec![&route1]);
+    }
+
+    #[test]
+    fn test_withdraw() {
+        let mut entry = BgpRibTreebitmapEntry::new();
+
+        // Create test routes and masks
+        let mask1 = RouterMask(0b001);
+        let mask2 = RouterMask(0b010);
+        let mask3 = RouterMask(0b100);
+
+        let route1 = Route {
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
+            next_hop: "192.168.1.1".to_string(),
+            peer: IpAddr::from_str("192.168.1.1").unwrap(),
+            as_path: vec![PathElement::ASN(1), PathElement::ASN(2)],
+            ..Default::default()
+        };
+
+        let route2 = Route {
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
+            next_hop: "192.168.1.2".to_string(),
+            peer: IpAddr::from_str("192.168.1.2").unwrap(),
+            as_path: vec![PathElement::ASN(3), PathElement::ASN(4)],
+            ..Default::default()
+        };
+
+        // Insert routes
+        entry.insert(mask1.clone(), route1.clone());
+        entry.insert(mask2.clone(), route1.clone());
+        entry.insert(mask3.clone(), route2.clone());
+        assert_eq!(entry.len(), 2);
+
+        // Test 1: Remove mask from matching routes (but different masks)
+        entry.withdraw(&mask1, &route1);
+        assert_eq!(entry.len(), 2);
+        assert_eq!(entry.get_with_mask(&mask1), Vec::<&Route>::new());
+        assert_eq!(entry.get_with_mask(&mask2), vec![&route1]);
+        assert_eq!(entry.get_with_mask(&mask3), vec![&route2]);
+
+        // Test 2: Withdraw exact match
+        entry.withdraw(&mask2, &route1);
+        assert_eq!(entry.len(), 1);
+        assert_eq!(entry.get_with_mask(&mask2), Vec::<&Route>::new());
+        assert_eq!(entry.get_with_mask(&mask3), vec![&route2]);
+
+        // Test 3: Withdraw non-existent route
+        entry.withdraw(&mask1, &route1);
+        assert_eq!(entry.len(), 1);
+        assert_eq!(entry.get_with_mask(&mask3), vec![&route2]);
     }
 }
