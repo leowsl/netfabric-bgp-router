@@ -7,7 +7,7 @@ use crate::utils::mutex_utils::TryLockWithTimeout;
 use std::error::Error;
 use std::mem::replace;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 const INCOMING_ADVERTISEMENTS_CAPACITY: usize = 1000;
@@ -52,12 +52,22 @@ impl Interface {
         self.bgp_session.as_ref()
     }
 
-    pub fn set_bgp_session(&mut self, bgp_session: BgpSession) -> Result<(), Box<dyn Error>> {
+    pub fn set_bgp_session(&mut self, bgp_session: BgpSession) -> Result<(), RouterError> {
         if self.bgp_session.is_some() {
-            return Err("Interface already has a BGP session!".into());
+            return Err(RouterError::InterfaceError(
+                "Interface already has a BGP session!".to_string(),
+            ));
         }
         self.bgp_session = Some(bgp_session);
         Ok(())
+    }
+
+    pub fn set_in_channel(&mut self, in_channel: MessageReceiver) {
+        self.in_channel = Some(Arc::new(Mutex::new(in_channel)));
+    }
+
+    pub fn set_out_channel(&mut self, out_channel: MessageSender) {
+        self.out_channel = Some(out_channel);
     }
 
     pub fn receive(&mut self) -> Result<(), RouterError> {
@@ -168,6 +178,7 @@ mod tests {
         let config = SessionConfig {
             session_type: SessionType::IBgp,
             as_number: 65000,
+            ..Default::default()
         };
         let bgp_session = BgpSession::new(config);
 
@@ -179,6 +190,7 @@ mod tests {
         let second_config = SessionConfig {
             session_type: SessionType::EBgp,
             as_number: 65001,
+            ..Default::default()
         };
         let second_session = BgpSession::new(second_config);
         assert!(interface.set_bgp_session(second_session).is_err());
@@ -240,7 +252,6 @@ mod tests {
             .create_channel(OUTGOING_ADVERTISEMENTS_CAPACITY + 1)
             .unwrap();
         interface.out_channel = Some(message_bus.publish(channel_id).unwrap());
-        let receiver = message_bus.subscribe(channel_id).unwrap();
 
         // Generate new advertisements
         fn get_ad() -> Advertisement {

@@ -16,11 +16,34 @@ pub enum MessageBusError {
     ThreadManagerError(#[from] ThreadManagerError),
     #[error("Send error: {0}")]
     SendError(#[from] std::sync::mpsc::SendError<Box<dyn Message>>),
+    #[error("Receive error: {0}")]
+    RecvError(#[from] std::sync::mpsc::TryRecvError),
 }
 
 pub trait Message: Any + Send + Sync + 'static {}
 pub type MessageSender = Arc<SyncSender<Box<dyn Message>>>;
 pub type MessageReceiver = Receiver<Box<dyn Message>>;
+
+/// Trait to extend MessageReceiver with retry functionality
+pub trait MessageReceiverExt {
+    fn receive_with_retry(&self, max_retries: u32, retry_delay_ms: u64) -> Result<Box<dyn Message>, std::sync::mpsc::TryRecvError>;
+}
+
+impl MessageReceiverExt for MessageReceiver {
+    fn receive_with_retry(&self, max_retries: u32, retry_delay_ms: u64) -> Result<Box<dyn Message>, std::sync::mpsc::TryRecvError> {
+        let mut retries = 0;
+        loop {
+            match self.try_recv() {
+                Ok(msg) => return Ok(msg),
+                Err(e) => {
+                    if retries >= max_retries { return Err(e); }
+                    std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
+                    retries += 1;
+                }
+            }
+        }
+    }
+}
 
 impl dyn Message {
     pub fn cast<T: 'static>(&self) -> Option<&T> {
@@ -39,6 +62,10 @@ impl MessageBus {
             senders: HashMap::new(),
             receivers: HashMap::new(),
         }
+    }
+
+    pub fn channel_exists(&self, id: Uuid) -> bool {
+        self.senders.contains_key(&id)
     }
 
     pub fn create_channel(&mut self, bound: usize) -> Result<Uuid, MessageBusError> {
@@ -89,6 +116,8 @@ impl MessageBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test_message_bus_creation() -> Result<(), MessageBusError> {
@@ -100,6 +129,14 @@ mod tests {
     fn test_message_bus_channel_creation() -> Result<(), MessageBusError> {
         let mut message_bus = MessageBus::new();
         let _channel_id = message_bus.create_channel(0)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_bus_channel_exists() -> Result<(), MessageBusError> {
+        let mut message_bus = MessageBus::new();
+        let channel_id = message_bus.create_channel(0)?;
+        assert!(message_bus.channel_exists(channel_id));
         Ok(())
     }
     
@@ -140,6 +177,36 @@ mod tests {
 
         assert!(message_bus.senders.get(&channel_id).is_none());
         assert!(message_bus.receivers.get(&channel_id).is_none());  
+        Ok(())
+    }
+
+    #[test]
+    fn test_receive_with_retry() -> Result<(), MessageBusError> {
+        #[derive(Debug)]
+        struct TestMessage(String);
+        impl Message for TestMessage {}
+        
+        let mut message_bus = MessageBus::new();
+        let channel_id = message_bus.create_channel(1)?;
+        let publisher = message_bus.publish(channel_id)?;
+        let subscriber = message_bus.subscribe(channel_id)?;
+        
+        // Send messages after a short delay
+        let publisher_clone = publisher.clone();
+        thread::spawn(move || {
+            for _ in 0..10 {
+                thread::sleep(Duration::from_millis(50));
+                publisher_clone.send(Box::new(TestMessage("hello".to_string()))).unwrap();
+            }
+        });
+        
+        // Receive with retry
+        for _ in 0..10 {
+            let msg = subscriber.receive_with_retry(3, 20)?;
+            let test_msg = msg.cast::<TestMessage>().expect("Failed to cast message");
+            assert_eq!(test_msg.0, "hello");
+        }
+        
         Ok(())
     }
 }
