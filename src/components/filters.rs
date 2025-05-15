@@ -1,6 +1,7 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::route::{PathElement, Route};
 use ip_network::IpNetwork;
+use std::fmt::Debug;
 
 pub trait Filter<T>: 'static + Send + Sync
 where
@@ -9,6 +10,15 @@ where
     fn filter(&self, element: &mut T) -> bool;
     fn filter_type(&self) -> &'static str {
         std::any::type_name::<T>()
+    }
+}
+
+impl<T> Debug for dyn Filter<T>
+where
+    T: 'static + Send + Sync + Clone,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", std::any::type_name::<Self>())
     }
 }
 
@@ -190,6 +200,12 @@ impl Filter<Route> for IpNetworkBlacklistFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_filter_debug() {
+        let host_filter: Box<dyn Filter<Advertisement>> = Box::new(HostFilter::new("192.168.1.1".to_string()));
+        println!("{:?}", host_filter);
+    }
 
     #[test]
     fn test_filter_own_as() {
