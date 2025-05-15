@@ -4,7 +4,6 @@ use crate::components::filters::{Filter, NoFilter};
 use crate::modules::router::RouterError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::mutex_utils::TryLockWithTimeout;
-use std::error::Error;
 use std::mem::replace;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
