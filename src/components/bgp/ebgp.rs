@@ -1,26 +1,26 @@
-use crate::components::bgp::bgp_session::{BgpSessionType, BgpSessionTypeTrait};
+use crate::components::bgp::bgp_session::BgpSessionTrait;
+use crate::components::bgp::bgp_config::SessionConfig;
 
 #[derive(Debug, Clone)]
 pub struct EBgpSession {}
 
-impl EBgpSession {
-    pub fn new() -> Self {
+impl BgpSessionTrait for EBgpSession {
+    fn new(config: SessionConfig) -> Self {
         Self {}
-    }
-}
-
-impl BgpSessionTypeTrait for EBgpSession {
-    fn create_session_type() -> BgpSessionType {
-        BgpSessionType::EBgp(Self::new())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::bgp::bgp_session::SessionType;
 
     #[test]
     fn create_ebgp_session() {
-        let _session = EBgpSession::new();
+        let config = SessionConfig {
+            session_type: SessionType::EBgp,
+            as_number: 0,
+        };
+        let _session = EBgpSession::new(config);
     }
 }

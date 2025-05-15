@@ -1,34 +1,36 @@
-use crate::components::bgp::ebgp::EBgpSession;
+use crate::components::bgp::bgp_config::SessionConfig;
 use crate::components::bgp::ibgp::IBgpSession;
+use crate::components::bgp::ebgp::EBgpSession;
 
-pub struct BgpSession {
-    session_type: BgpSessionType,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionType {
+    IBgp,
+    EBgp,
 }
 
-impl BgpSession {
-    pub fn new(session_type: BgpSessionType) -> Self {
-        Self { session_type }
-    }
-
-    pub fn session_type(&self) -> &BgpSessionType {
-        &self.session_type
-    }
+pub trait BgpSessionTrait {
+    fn new(config: SessionConfig) -> Self;
 }
 
-#[derive(Debug, Clone)]
-pub enum BgpSessionType {
-    Bgp,
+#[derive(Debug)]
+pub enum BgpSession {
     IBgp(IBgpSession),
     EBgp(EBgpSession),
 }
 
-pub trait BgpSessionTypeTrait {
-    fn create_session_type() -> BgpSessionType;
-}
+impl BgpSession {
+    pub fn new(config: SessionConfig) -> Self {
+        match config.session_type {
+            SessionType::IBgp => Self::IBgp(IBgpSession::new(config)),
+            SessionType::EBgp => Self::EBgp(EBgpSession::new(config)),
+        }
+    }
 
-impl BgpSessionTypeTrait for BgpSessionType {
-    fn create_session_type() -> BgpSessionType {
-        BgpSessionType::Bgp
+    pub fn get_session_type(&self) -> SessionType {
+        match self {
+            Self::IBgp(_) => SessionType::IBgp,
+            Self::EBgp(_) => SessionType::EBgp,
+        }
     }
 }
 
@@ -38,34 +40,11 @@ mod tests {
 
     #[test]
     fn create_bgp_session() {
-        let session = BgpSession::new(BgpSessionType::Bgp);
-        match session.session_type() {
-            BgpSessionType::Bgp => (),
-            _ => panic!("Expected BgpSessionType::Bgp"),
-        }
-        match session.session_type {
-            BgpSessionType::Bgp => (),
-            _ => panic!("Expected BgpSessionType::Bgp"),
-        }
-
-        let session = BgpSession::new(BgpSessionType::IBgp(IBgpSession::new()));
-        match session.session_type() {
-            BgpSessionType::IBgp(_) => (),
-            _ => panic!("Expected BgpSessionType::IBgp"),
-        }
-        match session.session_type {
-            BgpSessionType::IBgp(_) => (),
-            _ => panic!("Expected BgpSessionType::IBgp"),
-        }
-
-        let session = BgpSession::new(BgpSessionType::EBgp(EBgpSession::new()));
-        match session.session_type() {
-            BgpSessionType::EBgp(_) => (),
-            _ => panic!("Expected BgpSessionType::EBgp"),
-        }
-        match session.session_type {
-            BgpSessionType::EBgp(_) => (),
-            _ => panic!("Expected BgpSessionType::EBgp"),
-        }
+        let config = SessionConfig {
+            session_type: SessionType::IBgp,
+            as_number: 0,
+        };
+        let session = BgpSession::new(config);
+        assert_eq!(session.get_session_type(), SessionType::IBgp);
     }
 }
