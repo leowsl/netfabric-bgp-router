@@ -92,15 +92,18 @@ impl ThreadManager {
         })
     }
 
-    pub fn get_message_bus_channel_pair(
+    pub fn get_message_bus_channel_pair_with_id(
         &self,
         channel_capacity: usize,
+        channel_id: Uuid,
     ) -> ThreadResult<(MessageSender, MessageReceiver)> {
-        let (tx, rx) = if let Ok(mut message_bus) = self.lock_message_bus() {
-            let channel_id = message_bus.create_channel(channel_capacity)?;
+        let (rx, tx) = if let Ok(mut message_bus) = self.lock_message_bus() {
+            if !message_bus.channel_exists(channel_id) {
+                message_bus.create_channel_with_uuid(channel_capacity, channel_id)?;
+            }
             (
-                message_bus.publish(channel_id)?,
                 message_bus.subscribe(channel_id)?,
+                message_bus.publish(channel_id)?,
             )
         } else {
             return Err(ThreadManagerError::LockError(
@@ -108,6 +111,13 @@ impl ThreadManager {
             ));
         };
         return Ok((tx, rx));
+    }
+
+    pub fn get_message_bus_channel_pair(
+        &self,
+        channel_capacity: usize,
+    ) -> ThreadResult<(MessageSender, MessageReceiver)> {
+        self.get_message_bus_channel_pair_with_id(channel_capacity, Uuid::new_v4())
     }
 }
 
