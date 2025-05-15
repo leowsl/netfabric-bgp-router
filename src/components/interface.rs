@@ -1,14 +1,14 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::bgp::bgp_session::BgpSession;
 use crate::components::filters::{Filter, NoFilter};
+use crate::modules::router::RouterError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
+use crate::utils::mutex_utils::TryLockWithTimeout;
 use std::error::Error;
-use std::net::IpAddr;
-use uuid::Uuid;
 use std::mem::replace;
-use crate::components::bgp::bgp_session::SessionType;
-use crate::components::bgp::bgp_config::SessionConfig;
-use crate::components::advertisement::{AdvertisementType, Announcement};
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex, MutexGuard};
+use uuid::Uuid;
 
 const INCOMING_ADVERTISEMENTS_CAPACITY: usize = 1000;
 const OUTGOING_ADVERTISEMENTS_CAPACITY: usize = 1000;
@@ -17,7 +17,7 @@ pub struct Interface {
     pub id: Uuid,
     ip_address: IpAddr,
     bgp_session: Option<BgpSession>,
-    in_channel: Option<MessageReceiver>,
+    in_channel: Option<Arc<Mutex<MessageReceiver>>>,
     out_channel: Option<MessageSender>,
     in_filter: Box<dyn Filter<Advertisement>>,
     out_filter: Box<dyn Filter<Advertisement>>,
@@ -39,7 +39,7 @@ impl Interface {
             outgoing_advertisements: Vec::with_capacity(OUTGOING_ADVERTISEMENTS_CAPACITY),
         }
     }
-    
+
     pub fn get_ip_address(&self) -> IpAddr {
         self.ip_address
     }
@@ -60,14 +60,19 @@ impl Interface {
         Ok(())
     }
 
-    pub fn receive(&mut self) -> Result<(()), Box<dyn Error>> {
-        match &mut self.in_channel {
-            None => (), // If this interface is send only, return Ok
-            Some(channel) => {
+    pub fn receive(&mut self) -> Result<(), RouterError> {
+        match &self.in_channel {
+            None => {
+                return Ok(());
+            } // If this interface is send only, return Ok
+            Some(mutex) => {
+                let channel = mutex.try_lock_with_timeout(std::time::Duration::from_millis(100))?;
                 while let Ok(message) = channel.try_recv() {
                     let mut ad = message
                         .cast::<Advertisement>()
-                        .ok_or("Received message is not an advertisement!")?
+                        .ok_or(RouterError::InterfaceError(
+                            "Received message is not an advertisement!".to_string(),
+                        ))?
                         .clone();
                     if self.in_filter.filter(&mut ad) {
                         if self.incoming_advertisements.len()
@@ -75,7 +80,9 @@ impl Interface {
                         {
                             self.incoming_advertisements.push(ad);
                         } else {
-                            return Err("Received advertisements capacity exceeded!".into());
+                            return Err(RouterError::InterfaceError(
+                                "Received advertisements capacity exceeded!".to_string(),
+                            ));
                         }
                     }
                 }
@@ -84,13 +91,15 @@ impl Interface {
         Ok(())
     }
 
-    pub fn send(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn send(&mut self) -> Result<(), RouterError> {
         match &mut self.out_channel {
             None => (),
             Some(channel) => {
                 for mut ad in self.outgoing_advertisements.drain(..) {
                     if self.out_filter.filter(&mut ad) {
-                        channel.send(Box::new(ad))?;
+                        channel
+                            .try_send(Box::new(ad))
+                            .map_err(|e| RouterError::InterfaceError(e.to_string()))?;
                     }
                 }
             }
@@ -99,19 +108,24 @@ impl Interface {
     }
 
     pub fn get_incoming_advertisements(&mut self) -> Vec<Advertisement> {
-        replace(&mut self.incoming_advertisements, Vec::with_capacity(INCOMING_ADVERTISEMENTS_CAPACITY))
+        replace(
+            &mut self.incoming_advertisements,
+            Vec::with_capacity(INCOMING_ADVERTISEMENTS_CAPACITY),
+        )
     }
 
     pub fn push_outgoing_advertisements(
         &mut self,
         mut advertisements: Vec<Advertisement>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), RouterError> {
         let capacity_left = std::cmp::min(
             advertisements.len(),
             self.outgoing_advertisements.capacity() - self.outgoing_advertisements.len(),
         );
         if capacity_left <= 0 {
-            return Err("Outgoing advertisements capacity exceeded!".into());
+            return Err(RouterError::InterfaceError(
+                "Outgoing advertisements capacity exceeded!".to_string(),
+            ));
         }
         self.outgoing_advertisements
             .extend(advertisements.drain(..capacity_left));
@@ -122,16 +136,17 @@ impl Interface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::bgp::bgp_config::SessionConfig;
+    use crate::components::bgp::bgp_session::SessionType;
+    use crate::utils::message_bus::MessageBus;
     use std::net::Ipv4Addr;
     use std::vec;
-    use crate::utils::message_bus::MessageBus;
-    use crate::components::advertisement::{AdvertisementType, Announcement};
 
     #[test]
     fn test_interface_creation() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interface = Interface::new(ip);
-        
+
         assert_eq!(interface.get_ip_address(), ip);
         assert!(interface.get_bgp_session().is_none());
         assert!(interface.incoming_advertisements.is_empty());
@@ -142,7 +157,7 @@ mod tests {
     fn test_set_ip_address() {
         let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
         let new_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        
+
         interface.set_ip_address(new_ip);
         assert_eq!(interface.get_ip_address(), new_ip);
     }
@@ -159,7 +174,7 @@ mod tests {
         // Test setting BGP session
         assert!(interface.set_bgp_session(bgp_session).is_ok());
         assert!(interface.get_bgp_session().is_some());
-        
+
         // Test setting second BGP session (should fail)
         let second_config = SessionConfig {
             session_type: SessionType::EBgp,
@@ -173,11 +188,13 @@ mod tests {
     fn test_message_handling() {
         let mut message_bus = MessageBus::new();
         let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        
+
         // Set up channels
         let channel_id = message_bus.create_channel(1).unwrap();
         let sender = message_bus.publish(channel_id).unwrap();
-        interface.in_channel = Some(message_bus.subscribe(channel_id).unwrap());
+        interface.in_channel = Some(Arc::new(Mutex::new(
+            message_bus.subscribe(channel_id).unwrap(),
+        )));
 
         let channel_id = message_bus.create_channel(1).unwrap();
         interface.out_channel = Some(message_bus.publish(channel_id).unwrap());
@@ -189,7 +206,7 @@ mod tests {
             ..Default::default()
         };
         sender.send(Box::new(ad.clone())).unwrap();
-        
+
         assert!(interface.receive().is_ok());
         let received_ads = interface.get_incoming_advertisements();
         assert_eq!(received_ads.len(), 1);
@@ -199,7 +216,7 @@ mod tests {
         let ads_to_send = vec![ad.clone()];
         assert!(interface.push_outgoing_advertisements(ads_to_send).is_ok());
         assert!(interface.send().is_ok());
-        
+
         let received = receiver.try_recv().unwrap();
         let received_ad = received.cast::<Advertisement>().unwrap();
         assert_eq!(*received_ad, ad);
@@ -209,13 +226,19 @@ mod tests {
     fn test_capacity_limits() {
         let mut message_bus = MessageBus::new();
         let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        
-        // Set up channels
-        let channel_id = message_bus.create_channel(INCOMING_ADVERTISEMENTS_CAPACITY + 1).unwrap();
-        let sender = message_bus.publish(channel_id).unwrap();
-        interface.in_channel = Some(message_bus.subscribe(channel_id).unwrap());
 
-        let channel_id = message_bus.create_channel(OUTGOING_ADVERTISEMENTS_CAPACITY + 1).unwrap();
+        // Set up channels
+        let channel_id = message_bus
+            .create_channel(INCOMING_ADVERTISEMENTS_CAPACITY + 1)
+            .unwrap();
+        let sender = message_bus.publish(channel_id).unwrap();
+        interface.in_channel = Some(Arc::new(Mutex::new(
+            message_bus.subscribe(channel_id).unwrap(),
+        )));
+
+        let channel_id = message_bus
+            .create_channel(OUTGOING_ADVERTISEMENTS_CAPACITY + 1)
+            .unwrap();
         interface.out_channel = Some(message_bus.publish(channel_id).unwrap());
         let receiver = message_bus.subscribe(channel_id).unwrap();
 
@@ -227,8 +250,9 @@ mod tests {
                 ..Default::default()
             }
         }
-        fn get_ad_boxed() -> Box<Advertisement> { Box::new(get_ad()) }
-
+        fn get_ad_boxed() -> Box<Advertisement> {
+            Box::new(get_ad())
+        }
 
         // Test incoming capacity limit
         for _ in 0..INCOMING_ADVERTISEMENTS_CAPACITY {
@@ -252,12 +276,14 @@ mod tests {
         assert!(interface.push_outgoing_advertisements(ads).is_ok());
 
         // Try to exceed capacity
-        assert!(interface.push_outgoing_advertisements(vec![get_ad()]).is_err());
+        assert!(interface
+            .push_outgoing_advertisements(vec![get_ad()])
+            .is_err());
 
         // Test if we can send again after the buffer was cleared
         assert!(interface.send().is_ok());
-        assert!(interface.push_outgoing_advertisements(vec![get_ad()]).is_ok());
+        assert!(interface
+            .push_outgoing_advertisements(vec![get_ad()])
+            .is_ok());
     }
 }
-
-
