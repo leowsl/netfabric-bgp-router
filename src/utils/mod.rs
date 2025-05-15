@@ -1,3 +1,4 @@
+pub mod database;
 pub mod message_bus;
 pub mod mutex_utils;
 pub mod pretty_prints;
