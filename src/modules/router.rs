@@ -8,7 +8,7 @@ use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::mutex_utils::TryLockWithTimeout;
 use crate::utils::state_machine::{State, StateTransition};
-use log::{error, info, warn};
+use log::{error, warn};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use thiserror::Error;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ pub enum RouterChannel {
 pub struct RouterOptions {
     pub use_bgp_rib: bool,
     pub capacity: usize,
-    pub drop_incoming_advertisements: bool,     // If true, this router will act as a blackhole
+    pub drop_incoming_advertisements: bool, // If true, this router will act as a blackhole
 }
 impl Default for RouterOptions {
     fn default() -> Self {
@@ -60,14 +60,14 @@ impl Router {
         if options.capacity < self.options.capacity {
             if self.incoming_advertisements.len() > options.capacity {
                 warn!(
-                    "Router {}: Decreasing capacity leads to loss of incoming advertisements.",
+                    "[{:.5}] Decreasing capacity leads to loss of incoming advertisements.",
                     self.id
                 );
                 self.incoming_advertisements.truncate(options.capacity);
             }
             if self.outgoing_advertisements.len() > options.capacity {
                 warn!(
-                    "Router {}: Decreasing capacity leads to loss of outgoing advertisements.",
+                    "[{:.5}] Decreasing capacity leads to loss of outgoing advertisements.",
                     self.id
                 );
                 self.outgoing_advertisements.truncate(options.capacity);
@@ -96,10 +96,18 @@ impl Router {
         self.interfaces.iter().find(|interface| interface.id == *id)
     }
 
+    pub fn get_interface_by_index(&self, index: usize) -> Option<&Interface> {
+        self.interfaces.get(index)
+    }
+
     pub fn get_interface_mut(&mut self, id: &Uuid) -> Option<&mut Interface> {
         self.interfaces
             .iter_mut()
             .find(|interface| interface.id == *id)
+    }
+
+    pub fn get_interface_by_index_mut(&mut self, index: usize) -> Option<&mut Interface> {
+        self.interfaces.get_mut(index)
     }
 
     pub fn set_rib(&mut self, rib: &Arc<Mutex<BgpRib>>) {
@@ -110,7 +118,7 @@ impl Router {
     pub fn get_incoming_advertisements(&mut self) -> Result<(), RouterError> {
         for interface in &mut self.interfaces {
             interface.receive().unwrap_or_else(|e| {
-                warn!("{e}");
+                warn!("[{:.5}] {e}", self.id);
             });
             self.incoming_advertisements
                 .extend(interface.get_incoming_advertisements());
@@ -141,25 +149,15 @@ impl Router {
     }
 
     pub fn process_outgoing_advertisements(&mut self) -> Result<(), RouterError> {
-        let outgoing_advertisements = std::mem::replace(
-            &mut self.outgoing_advertisements,
-            Vec::with_capacity(self.options.capacity),
-        );
         for interface in &mut self.interfaces {
-            if outgoing_advertisements.len() > 0 {
-                info!("Outgoing advertisements: {:?}", outgoing_advertisements);
-            }
-
             interface
-                .push_outgoing_advertisements(outgoing_advertisements.clone())
+                .push_outgoing_advertisements(self.outgoing_advertisements.clone())
                 .unwrap_or_else(|e| {
-                    warn!("{e}");
+                    warn!("[{:.5}] {e}", self.id);
                 });
-            interface.send().unwrap_or_else(|e| {
-                warn!("{e}");
-            });
+            interface.send();
         }
-        drop(outgoing_advertisements);
+        self.outgoing_advertisements.clear();
         Ok(())
     }
 }
@@ -170,7 +168,7 @@ impl State for Router {
         match self.get_incoming_advertisements() {
             Ok(_) => {}
             Err(e) => {
-                warn!("Error processing incoming advertisements: {}", e);
+                warn!("[{:.5}] Error processing incoming advertisements: {}", self.id, e);
             }
         };
 
@@ -183,38 +181,39 @@ impl State for Router {
         if self.options.use_bgp_rib {
             // Update self.rib
             match self.update_rib() {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
-                    warn!("Error updating RIB: {}", e);
+                    warn!("[{:.5}] Error updating RIB: {}", self.id, e);
                 }
             };
-
-            // TODO: Implement this
-            // match self.get_best_route_changes() {
-            //     Ok(_) => {},    // TODO: Fix when implemented
-            //     Err(e) => {
-            //         warn!("Error getting best route changes: {}", e);
-            //     }
-            // };
-
-            // TODO: remove this hack when get_best_route_changes is implemented
-            self.outgoing_advertisements = std::mem::replace(
-                &mut self.incoming_advertisements,
-                Vec::with_capacity(self.options.capacity),
-            );
-
-            // Send outgoing_advertisements
-            match self.process_outgoing_advertisements() {
-                Ok(_) => (),
-                Err(e) => {
-                    warn!("Error processing outgoing advertisements: {}", e);
-                }
-            };
-        }
-        else {
+        } else {
             // If RIB is not enabled, we clear the buffer to not overflow
             self.incoming_advertisements.clear();
         }
+
+        // TODO: Implement this
+        // match self.get_best_route_changes() {
+        //     Ok(_) => {},    // TODO: Fix when implemented
+        //     Err(e) => {
+        //         warn!("Error getting best route changes: {}", e);
+        //     }
+        // };
+
+        // TODO: remove this hack when get_best_route_changes is implemented
+        self.outgoing_advertisements.clear();
+        self.outgoing_advertisements = self.incoming_advertisements.drain(..).collect();
+
+        // Send outgoing_advertisements
+        match self.process_outgoing_advertisements() {
+            Ok(_) => (),
+            Err(e) => {
+                warn!("[{:.5}] Error processing outgoing advertisements: {}", self.id, e);
+            }
+        };
+
+        // Make sure the buffers are empty
+        self.incoming_advertisements.clear();
+        self.outgoing_advertisements.clear();
 
         StateTransition::Continue
     }
@@ -314,7 +313,7 @@ mod tests {
         interface.set_in_channel(rx1);
         interface.set_out_channel(tx2);
         router.add_interface(interface);
-        
+
         let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
         state_machine.start()?;
 
@@ -382,9 +381,15 @@ mod tests {
         let routes =
             rib.get_routes_for_router(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), &router_id);
         assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].prefix, IpNetwork::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap());
+        assert_eq!(
+            routes[0].prefix,
+            IpNetwork::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap()
+        );
         assert_eq!(routes[0].next_hop, "192.168.1.1");
-        assert_eq!(routes[0].as_path, vec![PathElement::ASN(1), PathElement::ASN(2)]);
+        assert_eq!(
+            routes[0].as_path,
+            vec![PathElement::ASN(1), PathElement::ASN(2)]
+        );
         Ok(())
     }
 }

@@ -23,6 +23,8 @@ pub struct Interface {
     out_filter: Box<dyn Filter<Advertisement>>,
     incoming_advertisements: Vec<Advertisement>,
     outgoing_advertisements: Vec<Advertisement>,
+    buffer_size_incoming: usize,
+    buffer_size_outgoing: usize,
 }
 
 impl Interface {
@@ -37,6 +39,8 @@ impl Interface {
             out_filter: Box::new(NoFilter),
             incoming_advertisements: Vec::with_capacity(INCOMING_ADVERTISEMENTS_CAPACITY),
             outgoing_advertisements: Vec::with_capacity(OUTGOING_ADVERTISEMENTS_CAPACITY),
+            buffer_size_incoming: INCOMING_ADVERTISEMENTS_CAPACITY,
+            buffer_size_outgoing: OUTGOING_ADVERTISEMENTS_CAPACITY,
         }
     }
 
@@ -70,11 +74,31 @@ impl Interface {
         self.out_channel = Some(out_channel);
     }
 
+    pub fn set_in_filter<F: Filter<Advertisement>>(&mut self, in_filter: F) {
+        self.in_filter = Box::new(in_filter);
+    }
+
+    pub fn set_out_filter<F: Filter<Advertisement>>(&mut self, out_filter: F) {
+        self.out_filter = Box::new(out_filter);
+    }
+
+    pub fn set_buffer_size(&mut self, incoming: usize, outgoing: usize) {
+        // New buffer size will be applied at next non-empty send/receive cycle or with force_resize
+        self.buffer_size_incoming = incoming;
+        self.buffer_size_outgoing = outgoing;
+    }
+
+    pub fn force_resize(&mut self) {
+        // I mean we could try to shrink or expand.
+        // - or just drop the current buffer
+        self.incoming_advertisements = Vec::with_capacity(self.buffer_size_incoming);
+        self.outgoing_advertisements = Vec::with_capacity(self.buffer_size_outgoing);
+    }
     pub fn receive(&mut self) -> Result<(), RouterError> {
         match &self.in_channel {
             None => {
                 return Ok(());
-            } // If this interface is send only, return Ok
+            } // If this interface is send only, we just act as if there are no new messages
             Some(mutex) => {
                 let channel = mutex.try_lock_with_timeout(std::time::Duration::from_millis(100))?;
                 while let Ok(message) = channel.try_recv() {
@@ -85,14 +109,14 @@ impl Interface {
                         ))?
                         .clone();
                     if self.in_filter.filter(&mut ad) {
-                        if self.incoming_advertisements.len()
-                            < self.incoming_advertisements.capacity()
+                        if self.incoming_advertisements.len() < self.incoming_advertisements.capacity()
                         {
                             self.incoming_advertisements.push(ad);
-                        } else {
-                            return Err(RouterError::InterfaceError(
-                                "Received advertisements capacity exceeded!".to_string(),
-                            ));
+                        } 
+                        else {
+                            // When buffer is full, we stop receiving
+                            // log::info!("Received advertisements capacity exceeded!");
+                            break;
                         }
                     }
                 }
@@ -101,27 +125,33 @@ impl Interface {
         Ok(())
     }
 
-    pub fn send(&mut self) -> Result<(), RouterError> {
-        if self.outgoing_advertisements.is_empty() { return Ok(()); }
+    pub fn send(&mut self) {
+        if self.outgoing_advertisements.is_empty() {
+            return;
+        }
         match &mut self.out_channel {
             None => (),
             Some(channel) => {
-                for mut ad in self.outgoing_advertisements.drain(..) {
+                // Drain does not seem to work, so we work with std::mem::replace
+                for mut ad in replace(&mut self.outgoing_advertisements, Vec::with_capacity(self.buffer_size_outgoing)).into_iter() {
                     if self.out_filter.filter(&mut ad) {
-                        channel
-                            .try_send(Box::new(ad))
-                            .map_err(|e| RouterError::InterfaceError(e.to_string()))?;
+                        match channel.try_send(Box::new(ad)) {
+                            Ok(_) => {}
+                            Err(_) => {
+                                // log::warn!(e);
+                                break;
+                            }
+                        }
                     }
                 }
             }
         }
-        Ok(())
     }
 
     pub fn get_incoming_advertisements(&mut self) -> Vec<Advertisement> {
         replace(
             &mut self.incoming_advertisements,
-            Vec::with_capacity(INCOMING_ADVERTISEMENTS_CAPACITY),
+            Vec::with_capacity(self.buffer_size_incoming),
         )
     }
 
@@ -129,11 +159,15 @@ impl Interface {
         &mut self,
         advertisement: Advertisement,
     ) -> Result<(), RouterError> {
+        if self.out_channel.is_none() {
+            // Dont send if theres no out channel
+            return Ok(());
+        }
         if self.outgoing_advertisements.len() < self.outgoing_advertisements.capacity() {
             self.outgoing_advertisements.push(advertisement);
         } else {
             return Err(RouterError::InterfaceError(
-                "Outgoing advertisements capacity exceeded!".to_string(),
+                "Outgoing advertisements buffer capacity exceeded!".to_string(),
             ));
         }
         Ok(())
@@ -143,17 +177,26 @@ impl Interface {
         &mut self,
         mut advertisements: Vec<Advertisement>,
     ) -> Result<(), RouterError> {
-        let capacity_left = std::cmp::min(
-            advertisements.len(),
-            self.outgoing_advertisements.capacity() - self.outgoing_advertisements.len(),
-        );
-        if capacity_left <= 0 {
-            return Err(RouterError::InterfaceError(
-                "Outgoing advertisements capacity exceeded!".to_string(),
-            ));
+        if advertisements.len() == 0 {
+            return Ok(());
+        }
+        if self.out_channel.is_none() {
+            // Dont send if theres no out channel
+            return Ok(());
+        }
+        let capacity_left =
+            self.outgoing_advertisements.capacity() - self.outgoing_advertisements.len();
+        if advertisements.len() > capacity_left {
+            let err: Result<(), RouterError> = Err(RouterError::InterfaceError(format!(
+                "Outgoing advertisements buffer capacity exceeded! Dropping {} advertisements!",
+                advertisements.len() - capacity_left
+            )));
+            self.outgoing_advertisements
+                .extend(advertisements.drain(..capacity_left));
+            return err;
         }
         self.outgoing_advertisements
-            .extend(advertisements.drain(..capacity_left));
+            .extend(advertisements.drain(..));
         Ok(())
     }
 }
@@ -163,8 +206,11 @@ mod tests {
     use super::*;
     use crate::components::bgp::bgp_config::SessionConfig;
     use crate::components::bgp::bgp_session::SessionType;
+    use crate::components::filters::{HostFilter, OwnASFilter};
+    use crate::components::route::PathElement;
     use crate::utils::message_bus::MessageBus;
-    use std::net::Ipv4Addr;
+    use crate::utils::thread_manager::ThreadManager;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::vec;
 
     #[test]
@@ -232,7 +278,7 @@ mod tests {
             raw: Some("test advertisement".to_string()),
             ..Default::default()
         };
-        sender.send(Box::new(ad.clone())).unwrap();
+        sender.send(Box::new(ad.clone()));
 
         assert!(interface.receive().is_ok());
         let received_ads = interface.get_incoming_advertisements();
@@ -242,7 +288,7 @@ mod tests {
         // Test sending messages
         let ads_to_send = vec![ad.clone()];
         assert!(interface.push_outgoing_advertisements(ads_to_send).is_ok());
-        assert!(interface.send().is_ok());
+        interface.send();
 
         let received = receiver.try_recv().unwrap();
         let received_ad = received.cast::<Advertisement>().unwrap();
@@ -250,66 +296,116 @@ mod tests {
     }
 
     #[test]
-    fn test_capacity_limits() {
-        let mut message_bus = MessageBus::new();
+    fn test_filter() {
+        let thread_manager = ThreadManager::new();
         let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
 
-        // Set up channels
-        let channel_id = message_bus
-            .create_channel(INCOMING_ADVERTISEMENTS_CAPACITY + 1)
-            .unwrap();
+        // Filters
+        let host_filter = HostFilter::new("good host".to_string());
+        let own_asn_filter = OwnASFilter::new(65000);
+        interface.set_in_filter(own_asn_filter);
+        interface.set_out_filter(host_filter);
+
+        // Channels
+        let (tx1, rx1) = thread_manager.get_message_bus_channel_pair(10).unwrap();
+        let (tx2, rx2) = thread_manager.get_message_bus_channel_pair(10).unwrap();
+        interface.set_in_channel(rx1);
+        interface.set_out_channel(tx2);
+
+        // Test outgoing w/ host filter
+        // Pass
+        let ad1 = Advertisement {
+            host: "good host".to_string(),
+            path: Some(vec![PathElement::ASN(65000)]),
+            raw: Some("test advertisement".to_string()),
+            ..Default::default()
+        };
+        interface.push_outgoing_advertisement(ad1).unwrap();
+        interface.send();
+        let m = rx2.try_recv();
+        assert!(m.is_ok());
+
+        // Fail
+        let ad2 = Advertisement {
+            host: "bad host".to_string(),
+            path: Some(vec![PathElement::ASN(65000)]),
+            ..Default::default()
+        };
+        interface.push_outgoing_advertisement(ad2).unwrap();
+        interface.send();
+        let m = rx2.try_recv();
+        assert!(m.is_err());
+
+        // Test incoming w/ own asn filter
+        // Pass
+        let ad3 = Advertisement {
+            host: "good host".to_string(),
+            path: Some(vec![PathElement::ASN(65001)]),
+            ..Default::default()
+        };
+        tx1.send(Box::new(ad3.clone())).unwrap();
+        interface.receive().unwrap();
+        let received_ads = interface.get_incoming_advertisements();
+        assert_eq!(received_ads.len(), 1);
+        assert_eq!(received_ads[0], ad3);
+
+        // Fail
+        let ad4 = Advertisement {
+            host: "good host".to_string(),
+            path: Some(vec![PathElement::ASN(65000)]),
+            ..Default::default()
+        };
+        tx1.send(Box::new(ad4.clone())).unwrap();
+        interface.receive().unwrap();
+        let received_ads = interface.get_incoming_advertisements();
+        assert_eq!(received_ads.len(), 0);
+    }
+
+    #[test]
+    fn test_buffers_capacity() {
+        // Create loopback channel
+        let mut message_bus = MessageBus::new();
+        let channel_id = message_bus.create_channel(100).unwrap();
         let sender = message_bus.publish(channel_id).unwrap();
-        interface.in_channel = Some(Arc::new(Mutex::new(
-            message_bus.subscribe(channel_id).unwrap(),
-        )));
+        let receiver = message_bus.subscribe(channel_id).unwrap();
 
-        let channel_id = message_bus
-            .create_channel(OUTGOING_ADVERTISEMENTS_CAPACITY + 1)
-            .unwrap();
-        interface.out_channel = Some(message_bus.publish(channel_id).unwrap());
+        // Create interface
+        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        interface.set_buffer_size(5, 5);
+        interface.force_resize();
+        assert_eq!(interface.outgoing_advertisements.capacity(), 5);
+        assert_eq!(interface.incoming_advertisements.capacity(), 5);
+        interface.set_in_channel(receiver);
+        interface.set_out_channel(sender);
 
-        // Generate new advertisements
-        fn get_ad() -> Advertisement {
-            Advertisement {
-                timestamp: std::time::Instant::now().elapsed().as_secs_f64(),
-                raw: Some("test advertisement".to_string()),
-                ..Default::default()
-            }
-        }
-        fn get_ad_boxed() -> Box<Advertisement> {
-            Box::new(get_ad())
-        }
 
-        // Test incoming capacity limit
-        for _ in 0..INCOMING_ADVERTISEMENTS_CAPACITY {
-            sender.send(get_ad_boxed()).unwrap();
-        }
+        // Test outgoing buffer
+        assert_eq!(interface.outgoing_advertisements.len(), 0);
+        interface.push_outgoing_advertisements(vec![Advertisement::default(); 5]).unwrap();
+        assert_eq!(interface.outgoing_advertisements.len(), 5);
+        assert!(interface.push_outgoing_advertisement(Advertisement::default()).is_err());
+        assert_eq!(interface.outgoing_advertisements.len(), 5);
+        interface.send();
+        assert!(interface.push_outgoing_advertisement(Advertisement::default()).is_ok());
+        assert_eq!(interface.outgoing_advertisements.len(), 1);
+        interface.outgoing_advertisements.clear();
+
+        // Test incoming buffer - there are now 5 packets in the queue
+        assert_eq!(interface.incoming_advertisements.len(), 0);
+        interface.receive().unwrap();
+        assert_eq!(interface.incoming_advertisements.len(), 5);
+        
+        // We send one more. It should remain in the channel
+        interface.push_outgoing_advertisement(Advertisement::default()).unwrap();
+        interface.send();
+        assert_eq!(interface.incoming_advertisements.len(), 5);
+
+        drop(interface.get_incoming_advertisements());
+        assert_eq!(interface.incoming_advertisements.len(), 0);
+
+        // Now that the buffer is empty, we should be able to receive again
+        interface.send();
         assert!(interface.receive().is_ok());
-
-        // Try to exceed capacity
-        sender.send(get_ad_boxed()).unwrap();
-        assert!(interface.receive().is_err());
-
-        // Test if we can receive again after the buffer was cleared
-        assert!(interface.get_incoming_advertisements().len() == INCOMING_ADVERTISEMENTS_CAPACITY);
-        assert!(interface.receive().is_ok());
-
-        // Test outgoing capacity limit
-        let mut ads = Vec::with_capacity(OUTGOING_ADVERTISEMENTS_CAPACITY);
-        for _ in 0..OUTGOING_ADVERTISEMENTS_CAPACITY {
-            ads.push(get_ad());
-        }
-        assert!(interface.push_outgoing_advertisements(ads).is_ok());
-
-        // Try to exceed capacity
-        assert!(interface
-            .push_outgoing_advertisements(vec![get_ad()])
-            .is_err());
-
-        // Test if we can send again after the buffer was cleared
-        assert!(interface.send().is_ok());
-        assert!(interface
-            .push_outgoing_advertisements(vec![get_ad()])
-            .is_ok());
+        assert_eq!(interface.incoming_advertisements.len(), 1);
     }
 }

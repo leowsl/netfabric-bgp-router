@@ -195,20 +195,9 @@ impl State for LiveBgpParser {
         }
 
         // Send advertisements
-        match self.interface.as_mut().unwrap().send() {
-            Ok(_) => { /* info!("Advertisements sent"); */ },
-            Err(e) => {
-                error!("Couldn't send advertisements! {}", e);
-                self.statistics.errors_encountered += 1;
-                self.statistics.last_error = Some(format!("Couldn't send advertisements! {}", e));
-                self.statistics.last_error_time = Some(std::time::Instant::now());
-                let _ = self.stop_stream();
-                match self.restart_policy {
-                    RestartPolicy::StopOnError => return StateTransition::Stop,
-                    RestartPolicy::RestartOnError => return StateTransition::Continue,
-                }
-            }
-        };
+        assert!(self.interface.is_some());    // Save unwrap, because we checked self.interface.is_none() at the beginning od the loop
+        self.interface.as_mut().unwrap().send();
+        
         StateTransition::Continue
     }
     fn cleanup(&mut self) {
@@ -236,6 +225,7 @@ impl Clone for LiveBgpParser {
 
 pub fn get_parser_with_router(
     thread_manager: &mut ThreadManager,
+    interface_buffer_size: usize,
     link_buffer_size: usize,
 ) -> Result<(LiveBgpParser, Router), NetworkManagerError> {
     
@@ -247,6 +237,9 @@ pub fn get_parser_with_router(
     let (tx, rx) = thread_manager.get_message_bus_channel_pair(link_buffer_size)?;
     parser_interface.set_out_channel(tx);
     router_interface.set_in_channel(rx);
+
+    parser_interface.set_buffer_size(0, interface_buffer_size);
+    router_interface.set_buffer_size(interface_buffer_size, 0);
 
     // Parser & Router
     let parser = LiveBgpParser::new(parser_interface);
@@ -378,7 +371,7 @@ mod tests {
         use crate::modules::router::RouterOptions;
         
         let mut thread_manager = ThreadManager::new();
-        let (parser, mut router) = get_parser_with_router(&mut thread_manager, 1000).unwrap();
+        let (parser, mut router) = get_parser_with_router(&mut thread_manager, 1000, 100).unwrap();
 
         router.set_options(RouterOptions {
             capacity: 1000,

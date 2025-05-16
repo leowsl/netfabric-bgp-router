@@ -90,6 +90,7 @@ impl<'a> NetworkManager<'a> {
         (router_id, router_ip): (&Uuid, &IpAddr),
         (peer_id, peer_ip): (&Uuid, &IpAddr),
         link_buffer_size: usize,
+        interface_buffer_size: usize,
     ) -> Result<(Uuid, Uuid), NetworkManagerError> {
         if !self.routers.contains_key(router_id) {
             return Err(NetworkManagerError::RouterNotFound(*router_id));
@@ -100,6 +101,9 @@ impl<'a> NetworkManager<'a> {
 
         let mut router_interface = Interface::new(router_ip.clone());
         let mut peer_interface = Interface::new(peer_ip.clone());
+
+        router_interface.set_buffer_size(interface_buffer_size, interface_buffer_size);
+        peer_interface.set_buffer_size(interface_buffer_size, interface_buffer_size);
 
         let router_interface_id = router_interface.id;
         let peer_interface_id = peer_interface.id;
@@ -122,9 +126,13 @@ impl<'a> NetworkManager<'a> {
         (router_id, router_ip): (&Uuid, &IpAddr),
         (peer_id, peer_ip): (&Uuid, &IpAddr),
         link_buffer_size: usize,
+        interface_buffer_size: usize,
     ) -> Result<(Uuid, Uuid), NetworkManagerError> {
         let mut router_interface = Interface::new(router_ip.clone());
         let mut peer_interface = Interface::new(peer_ip.clone());
+
+        router_interface.set_buffer_size(interface_buffer_size, interface_buffer_size);
+        peer_interface.set_buffer_size(interface_buffer_size, interface_buffer_size);
 
         let router_interface_id = router_interface.id;
         let peer_interface_id = peer_interface.id;
@@ -306,6 +314,7 @@ mod tests {
                 (&router_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
                 (&Uuid::new_v4(), &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
                 10,
+                10,
             ),
             Err(NetworkManagerError::RouterNotFound(_))
         ));
@@ -343,12 +352,14 @@ mod tests {
                 (&router1_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
                 (&router2_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
                 10,
+                10,
             )
             .unwrap();
         network
             .create_router_interface_pair_duplex(
                 (&router1_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
                 (&router3_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3))),
+                10,
                 10,
             )
             .unwrap();
@@ -397,6 +408,7 @@ mod tests {
                 (&router1_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
                 (&router2_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
                 10,
+                10,
             )
             .unwrap();
 
@@ -405,6 +417,7 @@ mod tests {
             .create_router_interface_pair_duplex(
                 (&router1_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
                 (&router2_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
+                10,
                 10,
             )
             .unwrap();
@@ -452,6 +465,7 @@ mod tests {
             .create_router_interface_pair_duplex(
                 (&router1_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
                 (&router2_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
+                10,
                 10,
             )
             .unwrap();

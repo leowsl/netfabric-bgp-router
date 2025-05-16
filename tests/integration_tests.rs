@@ -68,7 +68,7 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
     let mut thread_manager = ThreadManager::new();
 
     // Create parser and router
-    let (parser, mut router) = get_parser_with_router(&mut thread_manager, 10)
+    let (parser, mut router) = get_parser_with_router(&mut thread_manager, 10, 10)
         .map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;
     router.set_options(RouterOptions {
         drop_incoming_advertisements: true,
@@ -120,7 +120,7 @@ fn test_create_and_start_network_with_live_parsing_to_rib() -> Result<(), Networ
     let thread_manager = &mut ThreadManager::new();
 
     // Live Bgp Parser
-    let (bgp_live_parser, router) = get_parser_with_router(thread_manager, 500)?;
+    let (bgp_live_parser, router) = get_parser_with_router(thread_manager, 1000, 500)?;
     let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
 
     // Create and start network

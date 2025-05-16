@@ -7,10 +7,12 @@ fn test_create_and_start_network(
     thread_manager: &mut ThreadManager,
 ) -> Result<(), NetworkManagerError> {
     use netfabric_bgp::components::advertisement::Advertisement;
-    use netfabric_bgp::components::filters::{CombinedOrFilter, HostFilter, NoFilter};
+    use netfabric_bgp::components::filters::{CombinedOrFilter, HostFilter};
     use netfabric_bgp::modules::live_bgp_parser::{get_parser_with_router, LiveBgpParser};
     use netfabric_bgp::modules::network::NetworkManager;
     use netfabric_bgp::utils::state_machine::StateMachine;
+    use std::net::{IpAddr, Ipv4Addr};
+    use netfabric_bgp::modules::router::RouterOptions;
     use uuid::Uuid;
 
     // ids
@@ -18,14 +20,20 @@ fn test_create_and_start_network(
     let router2_id = Uuid::new_v4();
     let router3_id = Uuid::new_v4();
 
-    // Live Bgp Parser
-    let (parser, router0) = get_parser_with_router(thread_manager, 2000)?;
+    // Live Bgp Parser - need to figure out how ripe processes bursts and if the buffer us sufficient
+    let (parser, mut router0) = get_parser_with_router(thread_manager, 1000, 500)?;
     let mut parser_sm = StateMachine::new(thread_manager, parser)?;
+
+    // Router 0 (Connected to live bgp parser)
     let router0_id = router0.id.clone();
     let host_filter: CombinedOrFilter<Advertisement> = CombinedOrFilter::from_vec(vec![
         HostFilter::new("rrc15.ripe.net".to_string()),
         HostFilter::new("rrc16.ripe.net".to_string()),
     ]);
+    router0
+        .get_interface_by_index_mut(0)
+        .unwrap()
+        .set_in_filter(host_filter);
 
     // Create network
     let mut network_manager = NetworkManager::new(thread_manager);
@@ -35,23 +43,65 @@ fn test_create_and_start_network(
     network_manager.create_router(router3_id);
 
     // Connections
-    // network_manager.connect_router_pair(&router0_id, &router1_id, 200, (NoFilter, NoFilter))?;
-    // network_manager.connect_router_pair(&router0_id, &router2_id, 400, (NoFilter, NoFilter))?;
-    // network_manager.connect_router_pair(&router1_id, &router2_id, 400, (NoFilter, NoFilter))?;
-    // network_manager.connect_router_pair(&router1_id, &router3_id, 400, (NoFilter, NoFilter))?;
-    // network_manager.connect_router_pair(&router2_id, &router3_id, 400, (NoFilter, NoFilter))?;
+    // 0 -> 1
+    network_manager.create_router_interface_pair(
+        (&router0_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 1, 1))),
+        (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 1, 2))),
+        250,
+        250,
+    )?;
+    // 0 -> 2
+    network_manager.create_router_interface_pair(
+        (&router0_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 2, 1))),
+        (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 2, 2))),
+        250,
+        500,
+    )?;
+    // 1 -> 2
+    network_manager.create_router_interface_pair(
+        (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 3, 1))),
+        (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 3, 2))),
+        250,
+        500,
+    )?;
+    // 1 -> 3
+    network_manager.create_router_interface_pair(
+        (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 4, 1))),
+        (&router3_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 4, 2))),
+        250,
+        250,
+    )?;
+    // 2 -> 3
+    network_manager.create_router_interface_pair(
+        (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 5, 1))),
+        (&router3_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 5, 2))),
+        250,
+        250,
+    )?;
+
+    // Some settings
+    network_manager.get_router_mut(&router3_id).unwrap().set_options(RouterOptions {
+        drop_incoming_advertisements: true,
+        ..Default::default()
+    });
 
     // Start the network
     network_manager.start()?;
     parser_sm.start()?;
 
-    std::thread::sleep(std::time::Duration::from_secs(10));
+    std::thread::sleep(std::time::Duration::from_secs(20));
 
     // Stop the network - Give time for the network to stabilize
     parser_sm.stop()?;
     std::thread::sleep(std::time::Duration::from_secs(1));
     network_manager.stop()?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    info!("Router mapping:");
+    info!("Router 0: {:.4}", router0_id.to_string());
+    info!("Router 1: {:.4}", router1_id.to_string());
+    info!("Router 2: {:.4}", router2_id.to_string());
+    info!("Router 3: {:.4}", router3_id.to_string());
 
     network_manager
         .get_rib_clone()
