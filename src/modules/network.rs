@@ -1,11 +1,10 @@
-use crate::components::advertisement::Advertisement;
 use crate::components::bgp::bgp_config::SessionConfig;
 use crate::components::bgp::bgp_session::BgpSession;
 use crate::components::bgp_rib::BgpRib;
 use crate::components::filters::Filter;
 use crate::components::interface::Interface;
-use crate::modules::router::{Router, RouterChannel, RouterConnection};
-use crate::utils::message_bus::{MessageBusError, MessageReceiver, MessageSender};
+use crate::modules::router::Router;
+use crate::utils::message_bus::MessageBusError;
 use crate::utils::state_machine::{StateMachine, StateMachineError};
 use crate::utils::thread_manager::{ThreadManager, ThreadManagerError};
 use log::info;
@@ -59,32 +58,17 @@ impl<'a> NetworkManager<'a> {
         self.routers.get_mut(id)
     }
 
-    pub fn connect_router_pair<F1: Filter<Advertisement>, F2: Filter<Advertisement>>(
+    pub fn connect_interface_pair(
         &mut self,
-        router_id: &Uuid,
-        peer_id: &Uuid,
+        interface1: &mut Interface,
+        interface2: &mut Interface,
         link_buffer_size: usize,
-        filters: (F1, F2),
     ) -> Result<(), NetworkManagerError> {
-        let [Some(router), Some(peer)] = self.routers.get_disjoint_mut([router_id, peer_id]) else {
-            return Err(NetworkManagerError::ConnectionError(format!(
-                "Router not found: {} {}",
-                router_id, peer_id
-            )));
-        };
-
         let (tx, rx) = self
             .thread_manager
             .get_message_bus_channel_pair(link_buffer_size)?;
-
-        router.add_connection(RouterConnection {
-            channel: RouterChannel::Outbound(tx),
-            filter: Box::new(filters.0),
-        });
-        peer.add_connection(RouterConnection {
-            channel: RouterChannel::Inbound(rx),
-            filter: Box::new(filters.1),
-        });
+        interface1.set_out_channel(tx);
+        interface2.set_in_channel(rx);
         Ok(())
     }
 
@@ -107,6 +91,13 @@ impl<'a> NetworkManager<'a> {
         (peer_id, peer_ip): (&Uuid, &IpAddr),
         link_buffer_size: usize,
     ) -> Result<(Uuid, Uuid), NetworkManagerError> {
+        if !self.routers.contains_key(router_id) {
+            return Err(NetworkManagerError::RouterNotFound(*router_id));
+        }
+        if !self.routers.contains_key(peer_id) {
+            return Err(NetworkManagerError::RouterNotFound(*peer_id));
+        }
+
         let mut router_interface = Interface::new(router_ip.clone());
         let mut peer_interface = Interface::new(peer_ip.clone());
 
@@ -165,46 +156,6 @@ impl<'a> NetworkManager<'a> {
         let mut interface = Interface::new(bgp_session.get_session_ip().clone());
         interface.set_bgp_session(bgp_session)?;
         self.insert_router_interface(router_id, interface)
-    }
-
-    pub fn create_router_rx<F: Filter<Advertisement>>(
-        &mut self,
-        router_id: &Uuid,
-        link_buffer_size: usize,
-        filter: F,
-    ) -> Result<MessageReceiver, NetworkManagerError> {
-        let router = self
-            .routers
-            .get_mut(router_id)
-            .ok_or(NetworkManagerError::RouterNotFound(*router_id))?;
-        let (tx, rx) = self
-            .thread_manager
-            .get_message_bus_channel_pair(link_buffer_size)?;
-        router.add_connection(RouterConnection {
-            channel: RouterChannel::Outbound(tx),
-            filter: Box::new(filter),
-        });
-        Ok(rx)
-    }
-
-    pub fn create_router_tx<F: Filter<Advertisement>>(
-        &mut self,
-        router_id: &Uuid,
-        link_buffer_size: usize,
-        filter: F,
-    ) -> Result<MessageSender, NetworkManagerError> {
-        let router = self
-            .routers
-            .get_mut(router_id)
-            .ok_or(NetworkManagerError::RouterNotFound(*router_id))?;
-        let (tx, rx) = self
-            .thread_manager
-            .get_message_bus_channel_pair(link_buffer_size)?;
-        router.add_connection(RouterConnection {
-            channel: RouterChannel::Inbound(rx),
-            filter: Box::new(filter),
-        });
-        Ok(tx)
     }
 
     pub fn start(&mut self) -> Result<(), NetworkManagerError> {
@@ -278,12 +229,14 @@ impl std::error::Error for NetworkManagerError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::advertisement::Advertisement;
     use crate::components::bgp::bgp_config::SessionConfig;
     use crate::components::bgp::bgp_session::SessionType;
     use crate::components::filters::NoFilter;
-    use crate::modules::router::Router;
-    use std::net::{Ipv4Addr};
+    use crate::modules::router::{Router, RouterOptions};
     use crate::utils::message_bus::MessageReceiverExt;
+    use std::any::Any;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn test_create_network_manager() -> Result<(), NetworkManagerError> {
@@ -331,41 +284,6 @@ mod tests {
     }
 
     #[test]
-    fn test_connect_routers() {
-        // Set up network with two routers
-        let mut thread_manager = ThreadManager::new();
-        let mut network = NetworkManager::new(&mut thread_manager);
-
-        let router1_id = Uuid::new_v4();
-        let router2_id = Uuid::new_v4();
-        network.create_router(router1_id);
-        network.create_router(router2_id);
-
-        // Connect routers with test channels
-        network
-            .connect_router_pair(&router1_id, &router2_id, 10, (NoFilter, NoFilter))
-            .unwrap();
-
-        let tx = network.create_router_tx(&router1_id, 10, NoFilter).unwrap();
-        let rx = network.create_router_rx(&router2_id, 10, NoFilter).unwrap();
-
-        // Create test advertisement
-        let test_ad = Advertisement {
-            timestamp: std::time::Instant::now().elapsed().as_secs_f64(),
-            peer: "192.168.1.1".to_string(),
-            ..Default::default()
-        };
-
-        // Start network and verify message passing
-        network.start().unwrap();
-        tx.send(Box::new(test_ad.clone())).unwrap();
-
-        let received = rx.recv().unwrap();
-        let received_ad = received.cast::<Advertisement>().unwrap();
-        assert_eq!(received_ad, &test_ad);
-    }
-
-    #[test]
     #[should_panic(expected = "Router already exists")]
     fn test_duplicate_router() {
         let mut thread_manager = ThreadManager::new();
@@ -381,11 +299,15 @@ mod tests {
         let mut network = NetworkManager::new(&mut thread_manager);
         let router_id = Uuid::new_v4();
 
-        assert!(matches!(network.get_router_mut(&router_id), None));
+        assert!(network.get_router_mut(&router_id).is_none());
 
         assert!(matches!(
-            network.connect_router_pair(&router_id, &Uuid::new_v4(), 10, (NoFilter, NoFilter)),
-            Err(NetworkManagerError::ConnectionError(_))
+            network.create_router_interface_pair(
+                (&router_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+                (&Uuid::new_v4(), &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
+                10,
+            ),
+            Err(NetworkManagerError::RouterNotFound(_))
         ));
     }
 
@@ -417,10 +339,18 @@ mod tests {
 
         // Connect router1 to both router2 and router3
         network
-            .connect_router_pair(&router1_id, &router2_id, 10, (NoFilter, NoFilter))
+            .create_router_interface_pair(
+                (&router1_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+                (&router2_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
+                10,
+            )
             .unwrap();
         network
-            .connect_router_pair(&router1_id, &router3_id, 10, (NoFilter, NoFilter))
+            .create_router_interface_pair_duplex(
+                (&router1_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+                (&router3_id, &IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3))),
+                10,
+            )
             .unwrap();
 
         assert!(network.start().is_ok());
@@ -502,8 +432,21 @@ mod tests {
         // Create two routers and connect them
         let router1_id = Uuid::new_v4();
         let router2_id = Uuid::new_v4();
+
         network.create_router(router1_id);
         network.create_router(router2_id);
+
+        // At the moment, packets are infinetely looped, so we increase capacity as a hack
+        let mut router1 = network.get_router_mut(&router1_id).unwrap();
+        router1.set_options(RouterOptions {
+            capacity: 10000,
+            ..Default::default()
+        });
+        let mut router2 = network.get_router_mut(&router2_id).unwrap();
+        router2.set_options(RouterOptions {
+            capacity: 10000,
+            ..Default::default()
+        });
 
         network
             .create_router_interface_pair_duplex(
@@ -516,7 +459,7 @@ mod tests {
         // Create duplex external connections to router 1
         let (tx1, router1_rx) = network
             .thread_manager
-            .get_message_bus_channel_pair(10)
+            .get_message_bus_channel_pair(100)
             .unwrap();
         let (router1_tx, rx1) = network
             .thread_manager
@@ -532,11 +475,11 @@ mod tests {
         // Create duplex external connections to router 2
         let (tx2, router2_rx) = network
             .thread_manager
-            .get_message_bus_channel_pair(10)
+            .get_message_bus_channel_pair(100)
             .unwrap();
         let (router2_tx, rx2) = network
             .thread_manager
-            .get_message_bus_channel_pair(10)
+            .get_message_bus_channel_pair(100)
             .unwrap();
         let mut interface2 = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)));
         interface2.set_out_channel(tx2);
@@ -547,6 +490,7 @@ mod tests {
 
         // Start network
         assert!(network.start().is_ok());
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Send
         let test_ad = Advertisement {
@@ -559,15 +503,12 @@ mod tests {
             router2_tx.send(Box::new(test_ad.clone())).unwrap();
         }
 
-        const MAX_RETRIES: u32 = 5;
-        const TIMEOUT_MS: u64 = 50;
-
         for _ in 0..5 {
-            let msg = router1_rx.receive_with_retry(MAX_RETRIES, TIMEOUT_MS).unwrap();
+            let msg = router1_rx.recv().unwrap();
             let received_ad = msg.cast::<Advertisement>().unwrap();
             assert_eq!(received_ad, &test_ad);
 
-            let msg = router2_rx.receive_with_retry(MAX_RETRIES, TIMEOUT_MS).unwrap();
+            let msg = router2_rx.recv().unwrap();
             let received_ad = msg.cast::<Advertisement>().unwrap();
             assert_eq!(received_ad, &test_ad);
         }

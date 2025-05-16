@@ -8,9 +8,8 @@ fn test_create_and_start_network(
 ) -> Result<(), NetworkManagerError> {
     use netfabric_bgp::components::advertisement::Advertisement;
     use netfabric_bgp::components::filters::{CombinedOrFilter, HostFilter, NoFilter};
-    use netfabric_bgp::modules::live_bgp_parser::{create_parser_router_pair, LiveBgpParser};
+    use netfabric_bgp::modules::live_bgp_parser::{get_parser_with_router, LiveBgpParser};
     use netfabric_bgp::modules::network::NetworkManager;
-    use netfabric_bgp::modules::router::RouterOptions;
     use netfabric_bgp::utils::state_machine::StateMachine;
     use uuid::Uuid;
 
@@ -20,46 +19,36 @@ fn test_create_and_start_network(
     let router3_id = Uuid::new_v4();
 
     // Live Bgp Parser
+    let (parser, router0) = get_parser_with_router(thread_manager, 2000)?;
+    let mut parser_sm = StateMachine::new(thread_manager, parser)?;
+    let router0_id = router0.id.clone();
     let host_filter: CombinedOrFilter<Advertisement> = CombinedOrFilter::from_vec(vec![
         HostFilter::new("rrc15.ripe.net".to_string()),
         HostFilter::new("rrc16.ripe.net".to_string()),
     ]);
 
-    let (bgp_live_parser, mut bgp_live_parser_router) =
-        create_parser_router_pair(thread_manager, 1000, host_filter)?;
-    let mut bgp_live_sm = StateMachine::new(thread_manager, bgp_live_parser)?;
-    let router0_id = bgp_live_parser_router.id.clone();
-    bgp_live_parser_router.set_options(RouterOptions {
-        use_bgp_rib: true,
-        ..Default::default()
-    });
-    println!(
-        "Router ID Mapping:\nRouter 0: {:?}\nRouter 1: {:?}\nRouter 2: {:?}\nRouter 3: {:?}",
-        router0_id, router1_id, router2_id, router3_id
-    );
-
     // Create network
     let mut network_manager = NetworkManager::new(thread_manager);
-    network_manager.insert_router(bgp_live_parser_router);
+    network_manager.insert_router(router0);
     network_manager.create_router(router1_id);
     network_manager.create_router(router2_id);
     network_manager.create_router(router3_id);
 
     // Connections
-    network_manager.connect_router_pair(&router0_id, &router1_id, 200, (NoFilter, NoFilter))?;
-    network_manager.connect_router_pair(&router0_id, &router2_id, 400, (NoFilter, NoFilter))?;
-    network_manager.connect_router_pair(&router1_id, &router2_id, 400, (NoFilter, NoFilter))?;
-    network_manager.connect_router_pair(&router1_id, &router3_id, 400, (NoFilter, NoFilter))?;
-    network_manager.connect_router_pair(&router2_id, &router3_id, 400, (NoFilter, NoFilter))?;
+    // network_manager.connect_router_pair(&router0_id, &router1_id, 200, (NoFilter, NoFilter))?;
+    // network_manager.connect_router_pair(&router0_id, &router2_id, 400, (NoFilter, NoFilter))?;
+    // network_manager.connect_router_pair(&router1_id, &router2_id, 400, (NoFilter, NoFilter))?;
+    // network_manager.connect_router_pair(&router1_id, &router3_id, 400, (NoFilter, NoFilter))?;
+    // network_manager.connect_router_pair(&router2_id, &router3_id, 400, (NoFilter, NoFilter))?;
 
     // Start the network
     network_manager.start()?;
-    bgp_live_sm.start()?;
+    parser_sm.start()?;
 
     std::thread::sleep(std::time::Duration::from_secs(10));
 
     // Stop the network - Give time for the network to stabilize
-    bgp_live_sm.stop()?;
+    parser_sm.stop()?;
     std::thread::sleep(std::time::Duration::from_secs(1));
     network_manager.stop()?;
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -70,7 +59,7 @@ fn test_create_and_start_network(
     info!("{}", &network_manager.get_rib_clone());
 
     drop(network_manager);
-    if let Some(final_state) = bgp_live_sm.get_final_state_cloned::<LiveBgpParser>(thread_manager) {
+    if let Some(final_state) = parser_sm.get_final_state_cloned::<LiveBgpParser>(thread_manager) {
         info!("{}", final_state.get_statistics());
     }
 

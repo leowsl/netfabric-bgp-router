@@ -1,19 +1,20 @@
 use crate::components::advertisement::Advertisement;
-use crate::components::filters::Filter;
+use crate::components::interface::Interface;
 use crate::components::ris_live_data::RisLiveMessage;
-use crate::modules::router::{Router, RouterChannel, RouterConnection};
-use crate::utils::message_bus::{Message, MessageSender};
+use crate::modules::network::NetworkManagerError;
+use crate::modules::router::Router;
+use crate::utils::message_bus::Message;
 use crate::utils::state_machine::{State, StateTransition};
-use crate::utils::thread_manager::{ThreadManager, ThreadManagerError};
+use crate::utils::thread_manager::ThreadManager;
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
-use log::{error, info};
+use log::{error, info, warn};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 static RIS_STREAM_URL: &str =
     "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
@@ -57,28 +58,27 @@ impl Default for LiveBgpParserStatistics {
     }
 }
 
-#[derive(Debug)]
 pub struct LiveBgpParser {
     url: &'static str,
     stream_handle: Option<JoinHandle<()>>,
-    runtime: Arc<Runtime>,
-    receiver: Option<Receiver<Bytes>>,
-    sender: MessageSender,
+    tokio_runtime: Arc<Runtime>,
+    byte_stream_receiver: Option<Receiver<Bytes>>,
     bytes_buffer: BytesMut,
     restart_policy: RestartPolicy,
     statistics: LiveBgpParserStatistics,
+    interface: Option<Interface>,
 }
 impl LiveBgpParser {
-    pub fn new(sender: MessageSender) -> Self {
+    pub fn new(interface: Interface) -> Self {
         Self {
             url: RIS_STREAM_URL,
             stream_handle: None,
-            runtime: Arc::new(Runtime::new().unwrap()),
+            tokio_runtime: Arc::new(Runtime::new().unwrap()),
             bytes_buffer: BytesMut::with_capacity(BUFFER_CAPACITY),
             restart_policy: RestartPolicy::default(),
-            receiver: None,
-            sender,
+            byte_stream_receiver: None,
             statistics: LiveBgpParserStatistics::default(),
+            interface: Some(interface),
         }
     }
     pub fn start_stream(&mut self) -> Result<(), BgpParserError> {
@@ -86,10 +86,10 @@ impl LiveBgpParser {
 
         // Channel to handle byte stream
         let (tx, rx) = channel(CHANNEL_CAPACITY);
-        self.receiver = Some(rx);
+        self.byte_stream_receiver = Some(rx);
 
         // Start the stream in tokio runtime because reqwest uses tokio
-        self.stream_handle = Some(Arc::clone(&self.runtime).spawn(async move {
+        self.stream_handle = Some(Arc::clone(&self.tokio_runtime).spawn(async move {
             if let Ok(response) = reqwest::get(url_clone).await {
                 let mut stream = response.bytes_stream();
                 while let Some(Ok(bytes)) = stream.next().await {
@@ -106,22 +106,25 @@ impl LiveBgpParser {
         }));
         Ok(())
     }
+
     pub fn stop_stream(&mut self) -> Result<(), BgpParserError> {
         info!("Stopping BGP Livestream");
         if let Some(handle) = self.stream_handle.take() {
             handle.abort();
         }
-        self.receiver = None;
+        self.byte_stream_receiver = None;
         self.bytes_buffer.clear();
         Ok(())
     }
+
     pub fn get_statistics(&self) -> &LiveBgpParserStatistics {
         &self.statistics
     }
+
     pub fn process_buffer(&mut self) -> Result<(), BgpParserError> {
         // Write byte stream to buffer
         let receiver = self
-            .receiver
+            .byte_stream_receiver
             .as_mut()
             .ok_or_else(|| BgpParserError::StreamError("No receiver found".to_string()))?;
         while let Ok(bytes) = receiver.try_recv() {
@@ -134,23 +137,37 @@ impl LiveBgpParser {
             let chunk = self.bytes_buffer.split_to(pos + 1);
             let message = serde_json::from_slice::<RisLiveMessage>(&chunk)?;
             if message.msg_type == "ris_message" {
-                self.sender.try_send(Box::new(Advertisement::from(message.data)))?;
+                self.interface
+                    .as_mut()
+                    .unwrap()
+                    .push_outgoing_advertisement(Advertisement::from(message.data))
+                    .map_err(|e| BgpParserError::SendError(e.to_string()))?;
                 self.statistics.messages_processed += 1;
             }
         }
         Ok(())
     }
 }
+
 impl State for LiveBgpParser {
     fn work(&mut self) -> StateTransition {
-        // Check if stream is running
+        if self.interface.is_none() {
+            if self.stream_handle.is_some() {
+                let _ = self.stop_stream();
+            }
+            warn!("No interface set for LiveBGP Parser. Stopping State Machine.");
+            return StateTransition::Stop;
+        }
+
+        // Start stream if not running
         if self.stream_handle.is_none() || self.stream_handle.as_ref().unwrap().is_finished() {
             match self.start_stream() {
                 Ok(_) => info!("Starting LiveBGP Stream"),
                 Err(e) => {
                     error!("Couldn't start bgp live stream! {}", e);
                     self.statistics.errors_encountered += 1;
-                    self.statistics.last_error = Some(format!("Couldn't start bgp live stream! {}", e));
+                    self.statistics.last_error =
+                        Some(format!("Couldn't start bgp live stream! {}", e));
                     self.statistics.last_error_time = Some(std::time::Instant::now());
                     let _ = self.stop_stream(); // could be err as stream was not started
                     match self.restart_policy {
@@ -161,7 +178,7 @@ impl State for LiveBgpParser {
             }
         }
 
-        // Process buffer
+        // Process buffer and send advertisements
         match self.process_buffer() {
             Ok(_) => { /*info!("Processing Buffer")*/ }
             Err(e) => {
@@ -169,13 +186,29 @@ impl State for LiveBgpParser {
                 self.statistics.errors_encountered += 1;
                 self.statistics.last_error = Some(format!("Couldn't process buffer! {}. Timeout for 1 sec to give routers time to catch up.", e));
                 self.statistics.last_error_time = Some(std::time::Instant::now());
-                self.stop_stream().unwrap();
+                let _ = self.stop_stream();
                 match self.restart_policy {
                     RestartPolicy::StopOnError => return StateTransition::Stop,
                     RestartPolicy::RestartOnError => return StateTransition::Continue,
                 }
             }
         }
+
+        // Send advertisements
+        match self.interface.as_mut().unwrap().send() {
+            Ok(_) => { /* info!("Advertisements sent"); */ },
+            Err(e) => {
+                error!("Couldn't send advertisements! {}", e);
+                self.statistics.errors_encountered += 1;
+                self.statistics.last_error = Some(format!("Couldn't send advertisements! {}", e));
+                self.statistics.last_error_time = Some(std::time::Instant::now());
+                let _ = self.stop_stream();
+                match self.restart_policy {
+                    RestartPolicy::StopOnError => return StateTransition::Stop,
+                    RestartPolicy::RestartOnError => return StateTransition::Continue,
+                }
+            }
+        };
         StateTransition::Continue
     }
     fn cleanup(&mut self) {
@@ -191,29 +224,35 @@ impl Clone for LiveBgpParser {
         Self {
             url: self.url,
             stream_handle: None,
-            runtime: Arc::new(Runtime::new().unwrap()),
-            receiver: None,
-            sender: self.sender.clone(),
+            tokio_runtime: Arc::new(Runtime::new().unwrap()),
+            byte_stream_receiver: None,
             bytes_buffer: self.bytes_buffer.clone(),
             restart_policy: self.restart_policy.clone(),
             statistics: self.statistics.clone(),
+            interface: None,
         }
     }
 }
 
-
-pub fn create_parser_router_pair<F: Filter<Advertisement>>(
+pub fn get_parser_with_router(
     thread_manager: &mut ThreadManager,
-    channel_capacity: usize,
-    filter: F,
-) -> Result<(LiveBgpParser, Router), ThreadManagerError> {
-    let (tx, rx) = thread_manager.get_message_bus_channel_pair(channel_capacity)?;
-    let parser = LiveBgpParser::new(tx);
-    let mut router = Router::new(Uuid::new_v4());
-    router.add_connection(RouterConnection {
-        channel: RouterChannel::Inbound(rx),
-        filter: Box::new(filter),
-    });
+    link_buffer_size: usize,
+) -> Result<(LiveBgpParser, Router), NetworkManagerError> {
+    
+    // Interfaces
+    let mut parser_interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+    let mut router_interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+    
+    // Channels
+    let (tx, rx) = thread_manager.get_message_bus_channel_pair(link_buffer_size)?;
+    parser_interface.set_out_channel(tx);
+    router_interface.set_in_channel(rx);
+
+    // Parser & Router
+    let parser = LiveBgpParser::new(parser_interface);
+    let mut router = Router::new(uuid::Uuid::new_v4());
+    router.add_interface(router_interface);
+
     Ok((parser, router))
 }
 
@@ -248,5 +287,126 @@ impl From<std::sync::mpsc::SendError<Box<dyn Message>>> for BgpParserError {
 impl From<std::sync::mpsc::TrySendError<Box<dyn Message>>> for BgpParserError {
     fn from(err: std::sync::mpsc::TrySendError<Box<dyn Message>>) -> Self {
         BgpParserError::SendError(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::message_bus::MessageReceiverExt;
+    use crate::utils::state_machine::StateMachine;
+    use crate::utils::thread_manager::ThreadManager;
+    use std::net::IpAddr;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn test_live_bgp_parser_initialization() {
+        let interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        let parser = LiveBgpParser::new(interface);
+
+        assert_eq!(parser.url, RIS_STREAM_URL);
+        assert!(parser.stream_handle.is_none());
+        assert!(parser.byte_stream_receiver.is_none());
+        assert_eq!(parser.restart_policy, RestartPolicy::RestartOnError);
+        assert_eq!(parser.statistics.messages_processed, 0);
+        assert_eq!(parser.statistics.bytes_received, 0);
+        assert_eq!(parser.statistics.errors_encountered, 0);
+    }
+
+    #[test]
+    fn test_run_parser() {
+        let mut thread_manager = ThreadManager::new();
+
+        // Create parser and router
+        let (tx, rx) = thread_manager.get_message_bus_channel_pair(1000).unwrap();
+        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        interface.set_out_channel(tx);
+        let parser = LiveBgpParser::new(interface);
+
+        // Create  and start state machines
+        let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
+
+        parser_sm.start().unwrap();
+
+        // Test if messages are coming in
+        assert!(rx.receive_with_retry(10, 100).is_ok());
+
+        parser_sm.stop().unwrap();
+    }
+
+    #[test]
+    fn test_live_parser_statistics() {
+        const TEST_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
+        let mut thread_manager = ThreadManager::new();
+
+        // Create parser and router
+        let (tx, rx) = thread_manager.get_message_bus_channel_pair(1000).unwrap();
+        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        interface.set_out_channel(tx);
+        let parser = LiveBgpParser::new(interface);
+
+        // Create and start parser & Dummy router so that channel does not overflow
+        let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
+        parser_sm.start().unwrap();
+        let dummy_router = thread_manager
+            .start_thread(move || {
+                let start = std::time::Instant::now();
+                while start.elapsed() < TEST_DURATION {
+                    let _ = rx.try_recv();
+                }
+            })
+            .unwrap();
+
+        std::thread::sleep(TEST_DURATION);
+
+        // Stop and get results
+        parser_sm.stop().unwrap();
+        let final_state: LiveBgpParser = parser_sm
+            .get_final_state_cloned::<LiveBgpParser>(&mut thread_manager)
+            .unwrap();
+        thread_manager.join_thread::<()>(&dummy_router).unwrap();
+        let statistics: &LiveBgpParserStatistics = final_state.get_statistics();
+        println!("Statistics: {}", statistics);
+
+        assert!(statistics.messages_processed > 0);
+        assert!(statistics.bytes_received > 0);
+        assert!(statistics.errors_encountered == 0);
+    }
+
+    #[test]
+    fn test_parser_with_router() {
+        use crate::modules::router::RouterOptions;
+        
+        let mut thread_manager = ThreadManager::new();
+        let (parser, mut router) = get_parser_with_router(&mut thread_manager, 1000).unwrap();
+
+        router.set_options(RouterOptions {
+            capacity: 1000,
+            use_bgp_rib: false,
+            drop_incoming_advertisements: true,
+            ..Default::default()
+        });
+
+        let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
+        let mut router_sm = StateMachine::new(&mut thread_manager, router).unwrap();
+
+
+        router_sm.start().unwrap();
+        parser_sm.start().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        parser_sm.stop().unwrap();
+        router_sm.stop().unwrap();
+
+        let final_state: LiveBgpParser = parser_sm
+            .get_final_state_cloned::<LiveBgpParser>(&mut thread_manager)
+            .unwrap();
+        let statistics: &LiveBgpParserStatistics = final_state.get_statistics();
+        println!("Statistics: {}", statistics);
+
+        assert!(statistics.messages_processed > 0);
+        assert!(statistics.bytes_received > 0);
+        assert!(statistics.errors_encountered == 0);
     }
 }
