@@ -1,9 +1,6 @@
 use crate::components::advertisement::Advertisement;
-use crate::components::advertisement::AdvertisementType;
 use crate::components::bgp_rib::BgpRib;
-use crate::components::filters::Filter;
 use crate::components::interface::Interface;
-use crate::components::route::Route;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::mutex_utils::TryLockWithTimeout;

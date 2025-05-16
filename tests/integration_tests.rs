@@ -1,22 +1,20 @@
-use netfabric_bgp::components::advertisement::{Advertisement, AdvertisementType};
-use netfabric_bgp::components::interface::Interface;
-use netfabric_bgp::components::ris_live_data::{RisLiveData, RisLiveMessage};
 use netfabric_bgp::modules::live_bgp_parser::get_parser_with_router;
 use netfabric_bgp::modules::network::{NetworkManager, NetworkManagerError};
-use netfabric_bgp::modules::router::{Router, RouterOptions};
+use netfabric_bgp::modules::router::RouterOptions;
 use netfabric_bgp::utils::message_bus::Message;
 use netfabric_bgp::utils::state_machine::{StateMachine, StateMachineError};
 use netfabric_bgp::utils::thread_manager::ThreadManager;
 
-use std::net::{IpAddr, Ipv4Addr};
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct TestMessage(String);
 impl Message for TestMessage {}
 
+#[allow(dead_code)]
 fn init() {
-    let _ = env_logger::try_init_from_env(env_logger::Env::default().filter_or("LOG_LEVEL", "info"));
+    let _ =
+        env_logger::try_init_from_env(env_logger::Env::default().filter_or("LOG_LEVEL", "info"));
 }
 
 #[test]

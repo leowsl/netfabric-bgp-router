@@ -278,7 +278,7 @@ mod tests {
             raw: Some("test advertisement".to_string()),
             ..Default::default()
         };
-        sender.send(Box::new(ad.clone()));
+        sender.send(Box::new(ad.clone())).unwrap();
 
         assert!(interface.receive().is_ok());
         let received_ads = interface.get_incoming_advertisements();

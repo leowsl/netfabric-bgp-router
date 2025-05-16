@@ -240,16 +240,13 @@ mod tests {
     use crate::components::advertisement::Advertisement;
     use crate::components::bgp::bgp_config::SessionConfig;
     use crate::components::bgp::bgp_session::SessionType;
-    use crate::components::filters::NoFilter;
     use crate::modules::router::{Router, RouterOptions};
-    use crate::utils::message_bus::MessageReceiverExt;
-    use std::any::Any;
     use std::net::Ipv4Addr;
 
     #[test]
     fn test_create_network_manager() -> Result<(), NetworkManagerError> {
         let mut thread_manager = ThreadManager::new();
-        let mut network = NetworkManager::new(&mut thread_manager);
+        let network = NetworkManager::new(&mut thread_manager);
         let rib = network.get_rib_lock();
 
         assert!(rib.get_prefix_count() == (0, 0));
@@ -450,12 +447,12 @@ mod tests {
         network.create_router(router2_id);
 
         // At the moment, packets are infinetely looped, so we increase capacity as a hack
-        let mut router1 = network.get_router_mut(&router1_id).unwrap();
+        let router1 = network.get_router_mut(&router1_id).unwrap();
         router1.set_options(RouterOptions {
             capacity: 10000,
             ..Default::default()
         });
-        let mut router2 = network.get_router_mut(&router2_id).unwrap();
+        let router2 = network.get_router_mut(&router2_id).unwrap();
         router2.set_options(RouterOptions {
             capacity: 10000,
             ..Default::default()

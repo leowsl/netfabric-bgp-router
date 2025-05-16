@@ -2,7 +2,6 @@ use crate::components::route::Route;
 use crate::utils::router_mask::{RouterMask, RouterMaskMap};
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
-use log::error;
 use std::net::IpAddr;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -171,12 +170,14 @@ impl BgpRib {
             .unwrap()
             .insert(router_mask.clone(), route.clone());
     }
+
     pub fn remove_route(&mut self, route: &Route, id: &Uuid) {
         let router_mask = self.router_mask_map.get(id);
         if let Some(entry) = self.treebitmap.exact_match_mut(route.prefix) {
             entry.withdraw(router_mask, route);
         }
     }
+
     pub fn update_routes(
         &mut self,
         announcements: &Vec<Route>,
