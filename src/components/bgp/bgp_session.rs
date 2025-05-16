@@ -12,7 +12,8 @@ pub enum SessionType {
 
 pub trait BgpSessionTrait {
     fn new(config: SessionConfig) -> Self;
-    fn get_session_ip(&self) -> &IpAddr;
+    fn get_ip(&self) -> &IpAddr;
+    fn get_as_number(&self) -> u64;
 }
 
 #[derive(Debug)]
@@ -35,11 +36,24 @@ impl BgpSession {
             Self::EBgp(_) => SessionType::EBgp,
         }
     }
+}
 
-    pub fn get_session_ip(&self) -> &IpAddr {
+impl BgpSessionTrait for BgpSession {
+    fn new(config: SessionConfig) -> Self {
+        Self::new(config)
+    }
+
+    fn get_ip(&self) -> &IpAddr {
         match self {
-            Self::IBgp(session) => session.get_session_ip(),
-            Self::EBgp(session) => session.get_session_ip(),
+            Self::IBgp(session) => session.get_ip(),
+            Self::EBgp(session) => session.get_ip(),
+        }
+    }
+
+    fn get_as_number(&self) -> u64 {
+        match self {
+            Self::IBgp(session) => session.get_as_number(),
+            Self::EBgp(session) => session.get_as_number(),
         }
     }
 }

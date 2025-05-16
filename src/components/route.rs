@@ -1,6 +1,8 @@
 use ip_network::IpNetwork;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
+use crate::components::bgp::bgp_bestroute::BestRoute;
+
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -36,5 +38,11 @@ impl Default for Route {
             next_hop: "".to_string(),
             as_path: Path::new(),
         }
+    }
+}
+
+impl From<BestRoute> for Route {
+    fn from(best_route: BestRoute) -> Self {
+        best_route.0
     }
 }

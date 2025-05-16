@@ -6,17 +6,23 @@ use crate::components::bgp::bgp_config::SessionConfig;
 #[derive(Debug, Clone)]
 pub struct EBgpSession {
     ip: IpAddr,
+    as_number: u64,
 }
 
 impl BgpSessionTrait for EBgpSession {
     fn new(config: SessionConfig) -> Self {
         Self {
             ip: config.ip,
+            as_number: config.as_number,
         }
     }
 
-    fn get_session_ip(&self) -> &IpAddr {
+    fn get_ip(&self) -> &IpAddr {
         &self.ip
+    }
+
+    fn get_as_number(&self) -> u64 {
+        self.as_number
     }
 }
 

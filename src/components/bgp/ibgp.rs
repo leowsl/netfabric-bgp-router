@@ -15,6 +15,7 @@ enum IBgpSessionType {
 pub struct IBgpSession {
     session_type: IBgpSessionType,
     ip: IpAddr,
+    as_number: u64,
 }
 
 impl BgpSessionTrait for IBgpSession {
@@ -22,12 +23,18 @@ impl BgpSessionTrait for IBgpSession {
         Self {
             session_type: IBgpSessionType::default(),
             ip: config.ip,
+            as_number: config.as_number,
         }
     }
 
-    fn get_session_ip(&self) -> &IpAddr {
+    fn get_ip(&self) -> &IpAddr {
         &self.ip
     }
+
+    fn get_as_number(&self) -> u64 {
+        self.as_number
+    }
+
 }
 
 #[cfg(test)]
