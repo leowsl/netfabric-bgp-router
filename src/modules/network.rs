@@ -1,5 +1,5 @@
 use crate::components::bgp::bgp_config::SessionConfig;
-use crate::components::bgp::bgp_session::BgpSession;
+use crate::components::bgp::bgp_session::{BgpSession, BgpSessionTrait};
 use crate::components::bgp_rib::BgpRib;
 use crate::components::filters::Filter;
 use crate::components::interface::Interface;
@@ -161,7 +161,7 @@ impl<'a> NetworkManager<'a> {
         config: SessionConfig,
     ) -> Result<(), NetworkManagerError> {
         let bgp_session = BgpSession::new(config);
-        let mut interface = Interface::new(bgp_session.get_session_ip().clone());
+        let mut interface = Interface::new(bgp_session.get_ip().clone());
         interface.set_bgp_session(bgp_session)?;
         self.insert_router_interface(router_id, interface)
     }
