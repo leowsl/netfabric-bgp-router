@@ -1,4 +1,5 @@
 use crate::components::advertisement::Advertisement;
+use crate::components::bgp::bgp_bestroute::BestRoute;
 use crate::components::bgp_rib::BgpRib;
 use crate::components::interface::Interface;
 use crate::utils::message_bus::MessageBusError;
@@ -123,7 +124,7 @@ impl Router {
         Ok(())
     }
 
-    pub fn update_rib(&mut self) -> Result<(), RouterError> {
+    pub fn update_rib(&mut self) -> Result<(Vec<BestRoute>, Vec<BestRoute>), RouterError> {
         let mut announcements = Vec::new();
         let mut withdrawals = Vec::new();
 
@@ -132,12 +133,23 @@ impl Router {
             withdrawals.extend(ad.get_withdrawals());
         }
 
-        self.bgp_rib
+        let mut bgp_rib_lock = self
+            .bgp_rib
             .as_ref()
             .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?
-            .try_lock_with_timeout(std::time::Duration::from_millis(100))?
-            .update_routes(&announcements, &withdrawals, &self.id);
-        Ok(())
+            .try_lock_with_timeout(std::time::Duration::from_millis(100))?;
+
+        let bestroute_announcements: Vec<BestRoute> = announcements
+            .iter()
+            .filter_map(|route| bgp_rib_lock.insert_route(route, &self.id))
+            .collect();
+
+        let bestroute_withdrawals: Vec<BestRoute> = withdrawals
+            .iter()
+            .filter_map(|route| bgp_rib_lock.remove_route(route, &self.id))
+            .collect();
+
+        Ok((bestroute_announcements, bestroute_withdrawals))
     }
 
     // TODO: Implement this
@@ -165,7 +177,10 @@ impl State for Router {
         match self.get_incoming_advertisements() {
             Ok(_) => {}
             Err(e) => {
-                warn!("[{:.5}] Error processing incoming advertisements: {}", self.id, e);
+                warn!(
+                    "[{:.5}] Error processing incoming advertisements: {}",
+                    self.id, e
+                );
             }
         };
 
@@ -178,7 +193,13 @@ impl State for Router {
         if self.options.use_bgp_rib {
             // Update self.rib
             match self.update_rib() {
-                Ok(_) => {}
+                Ok((announcements, withdrawals)) => {
+                    // TODO: Create advertisements from the bestroutes
+                    // if announcements.len() > 0 || withdrawals.len() > 0 {
+                    //     log::info!("[{:.5}] Got Bestroute Changes: Announcements: {}", self.id, announcements.len());
+                    //     log::info!("[{:.5}] Got Bestroute Changes: Withdrawals: {}", self.id, withdrawals.len());
+                    // }
+                }
                 Err(e) => {
                     warn!("[{:.5}] Error updating RIB: {}", self.id, e);
                 }
@@ -204,7 +225,10 @@ impl State for Router {
         match self.process_outgoing_advertisements() {
             Ok(_) => (),
             Err(e) => {
-                warn!("[{:.5}] Error processing outgoing advertisements: {}", self.id, e);
+                warn!(
+                    "[{:.5}] Error processing outgoing advertisements: {}",
+                    self.id, e
+                );
             }
         };
 

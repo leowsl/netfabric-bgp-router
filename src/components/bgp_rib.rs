@@ -6,6 +6,26 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use uuid::Uuid;
 
+use super::bgp::bgp_bestroute::BestRoute;
+
+
+/*
+TODO
+
+So the current implementation with the router map is not optimal.
+When we have a lot of routes, that are very similar, but only differ in small details, 
+we will have a lot of entries in the router map.
+
+Idea: In the rib entry we have fixed attributes for a route, like peer, as_path, etc.
+For fields that are variable like local pref, we instead use a sized vector that represents a one to one correspondence to the router mask.
+We can resize this vector, depending on the mask. To avoid unnecessary memory allocations, we can try to approximate the shared value size of a router mask.
+
+Another optimization is to use one bgp rib for eBGP and one for each iBGP session. This depends a bit on the network topology.
+We should try to provide a flexible structure to ensure we can adjust to the needs of different network topologies.
+
+Another optimization is to sort the entries for each prefix to accelerate bestroute lookups. 
+*/
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 struct BgpRibTreebitmapEntry(Vec<(RouterMask, Route)>);
 impl BgpRibTreebitmapEntry {
@@ -153,43 +173,51 @@ impl BgpRib {
             .unwrap_or_default()
     }
 
-    // pub fn get_bestroute_for_router(&self, prefix: &str, router: &RouterMask) -> Option<Route> {
-    //     self.best_routes
-    //         .get(prefix)
-    //         .and_then(|router_map| router_map.get(router).cloned())
-    // }
-
-    pub fn insert_route(&mut self, route: &Route, id: &Uuid) {
-        let router_mask = self.router_mask_map.get(id);
-        if self.treebitmap.exact_match(route.prefix).is_none() {
-            self.treebitmap
-                .insert(route.prefix, BgpRibTreebitmapEntry::new());
-        }
-        self.treebitmap
-            .exact_match_mut(route.prefix)
-            .unwrap()
-            .insert(router_mask.clone(), route.clone());
+    pub fn get_bestroute_for_router(&self, address: IpAddr, router: &Uuid) -> Option<BestRoute> {
+        let routes = self.get_routes_for_router(address, router);
+        BestRoute::calculate(routes)
     }
 
-    pub fn remove_route(&mut self, route: &Route, id: &Uuid) {
+    pub fn insert_route(&mut self, route: &Route, id: &Uuid) -> Option<BestRoute> {
+        let router_mask = self.router_mask_map.get(id);
+        let mut bestroute = None;
+        match self.treebitmap.exact_match_mut(route.prefix){
+            Some(entry) => {
+                // Entry exists, insert route and check if it is a new bestroute
+                // TODO: Adjust this when the rib entry is sorted
+                let mut all_routes = entry.get_all();
+                all_routes.push(route);
+                if BestRoute::calculate(all_routes).unwrap() == BestRoute::from(route.clone()) {
+                    bestroute = Some(BestRoute::from(route.clone()));
+                }
+                entry.insert(router_mask.clone(), route.clone());
+            }
+            None => {
+                // No entry exists, create one and return new bestroute
+                bestroute = Some(BestRoute::from(route.clone()));
+                let mut rib_entry = BgpRibTreebitmapEntry::new();
+                rib_entry.insert(router_mask.clone(), route.clone());
+                self.treebitmap.insert(route.prefix, rib_entry);
+            }
+        }
+        return bestroute;
+    }
+
+    pub fn remove_route(&mut self, route: &Route, id: &Uuid) -> Option<BestRoute>{
         let router_mask = self.router_mask_map.get(id);
         if let Some(entry) = self.treebitmap.exact_match_mut(route.prefix) {
+            let prev_bestroute = BestRoute::calculate(entry.get_all());
             entry.withdraw(router_mask, route);
+            if entry.len() == 0 {
+                self.treebitmap.remove(route.prefix.clone());
+            }
+            if let Some(prev_bestroute) = prev_bestroute {
+                if prev_bestroute == BestRoute::from(route.clone()) {
+                    return Some(prev_bestroute);
+                }
+            }
         }
-    }
-
-    pub fn update_routes(
-        &mut self,
-        announcements: &Vec<Route>,
-        withdrawals: &Vec<Route>,
-        id: &Uuid,
-    ) {
-        for route in announcements {
-            self.insert_route(route, id);
-        }
-        for route in withdrawals {
-            self.remove_route(route, id);
-        }
+        None
     }
 }
 impl Clone for BgpRib {
@@ -426,5 +454,88 @@ mod tests {
         entry.withdraw(&mask1, &route1);
         assert_eq!(entry.len(), 1);
         assert_eq!(entry.get_with_mask(&mask3), vec![&route2]);
+    }
+
+    #[test]
+    fn update_bestroute() {
+        let mut rib = BgpRib::new();
+        let id = Uuid::new_v4();
+        
+        // Insert initial route with longer AS path
+        let route1 = Route {
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
+            next_hop: "192.168.1.1".to_string(),
+            as_path: vec![
+                PathElement::ASN(1),
+                PathElement::ASN(2),
+                PathElement::ASN(3),
+            ],
+            peer: IpAddr::from_str("192.168.1.1").unwrap(),
+            ..Default::default()
+        };
+        
+        // First route should become best route
+        let bestroute1 = rib.insert_route(&route1, &id);
+        assert!(bestroute1.is_some());
+        assert_eq!(bestroute1.unwrap().0, route1.clone());
+        
+        // Insert better route (shorter AS path)
+        let route2 = Route {
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
+            next_hop: "192.168.1.2".to_string(),
+            as_path: vec![PathElement::ASN(1), PathElement::ASN(3)],
+            peer: IpAddr::from_str("192.168.1.2").unwrap(),
+            ..Default::default()
+        };
+        
+        // Second route should become new best route due to shorter AS path
+        let bestroute2 = rib.insert_route(&route2, &id);
+        assert!(bestroute2.is_some());
+        assert_eq!(bestroute2.unwrap().0, route2.clone());
+    }
+
+    #[test]
+    fn withdraw_bestroute() {
+        let mut rib = BgpRib::new();
+        let id = Uuid::new_v4();
+        
+        // Insert two routes for same prefix
+        let route1 = Route {
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
+            next_hop: "192.168.1.1".to_string(),
+            as_path: vec![
+                PathElement::ASN(1),
+                PathElement::ASN(2),
+                PathElement::ASN(3),
+            ],
+            peer: IpAddr::from_str("192.168.1.1").unwrap(),
+            ..Default::default()
+        };
+        
+        let route2 = Route {
+            prefix: IpNetwork::from_str_truncate("1.1.1.0/24").unwrap(),
+            next_hop: "192.168.1.2".to_string(),
+            as_path: vec![PathElement::ASN(1), PathElement::ASN(3)],
+            peer: IpAddr::from_str("192.168.1.2").unwrap(),
+            ..Default::default()
+        };
+        
+        rib.insert_route(&route1, &id);
+        rib.insert_route(&route2, &id);
+
+        // Assert that route2 is the best route
+        let bestroute2 = rib.get_bestroute_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &id);
+        assert!(bestroute2.is_some());
+        assert_eq!(bestroute2.unwrap().0, route2.clone());
+        
+        // Withdraw the best route (route2 - shorter AS path)
+        let withdrawn = rib.remove_route(&route2, &id);
+        assert!(withdrawn.is_some());
+        assert_eq!(withdrawn.unwrap().0, route2.clone());
+        
+        // Verify route1 is now the best route
+        let current_best = rib.get_bestroute_for_router(IpAddr::from_str("1.1.1.1").unwrap(), &id);
+        assert!(current_best.is_some());
+        assert_eq!(current_best.unwrap().0, route1.clone());
     }
 }

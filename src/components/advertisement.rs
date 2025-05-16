@@ -42,6 +42,7 @@ impl From<String> for AdvertisementType {
     }
 }
 
+// TODO: remove unnecessary fields and change type annotations
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Advertisement {
     pub timestamp: f64,
