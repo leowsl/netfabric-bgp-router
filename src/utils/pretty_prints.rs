@@ -15,7 +15,7 @@ fn format_numbers(n: f64) -> String {
     } else if n >= K {
         format!("{:.2} K", n / K)
     } else {
-        format!("{:.2} B", n)
+        format!("{:.2}  ", n)
     }
 }
 
