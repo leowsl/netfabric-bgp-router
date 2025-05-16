@@ -12,6 +12,7 @@ use uuid::Uuid;
 const INCOMING_ADVERTISEMENTS_CAPACITY: usize = 1000;
 const OUTGOING_ADVERTISEMENTS_CAPACITY: usize = 1000;
 
+#[derive(Debug)]
 pub struct Interface {
     pub id: Uuid,
     ip_address: IpAddr,
@@ -101,6 +102,7 @@ impl Interface {
     }
 
     pub fn send(&mut self) -> Result<(), RouterError> {
+        if self.outgoing_advertisements.is_empty() { return Ok(()); }
         match &mut self.out_channel {
             None => (),
             Some(channel) => {
@@ -121,6 +123,20 @@ impl Interface {
             &mut self.incoming_advertisements,
             Vec::with_capacity(INCOMING_ADVERTISEMENTS_CAPACITY),
         )
+    }
+
+    pub fn push_outgoing_advertisement(
+        &mut self,
+        advertisement: Advertisement,
+    ) -> Result<(), RouterError> {
+        if self.outgoing_advertisements.len() < self.outgoing_advertisements.capacity() {
+            self.outgoing_advertisements.push(advertisement);
+        } else {
+            return Err(RouterError::InterfaceError(
+                "Outgoing advertisements capacity exceeded!".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn push_outgoing_advertisements(
