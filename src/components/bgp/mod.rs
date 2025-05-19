@@ -4,5 +4,3 @@ pub mod bgp_message;
 pub mod bgp_rib;
 pub mod bgp_rib_entry;
 pub mod bgp_session;
-pub mod ebgp;
-pub mod ibgp;

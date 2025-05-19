@@ -1,5 +1,3 @@
-use crate::components::bgp::bgp_config::SessionConfig;
-use crate::components::bgp::bgp_session::{BgpSession, BgpSessionTrait};
 use crate::components::bgp_rib::BgpRib;
 use crate::components::filters::Filter;
 use crate::components::interface::Interface;
@@ -155,17 +153,6 @@ impl<'a> NetworkManager<'a> {
         Ok((router_interface_id, peer_interface_id))
     }
 
-    pub fn create_bgp_session(
-        &mut self,
-        router_id: &Uuid,
-        config: SessionConfig,
-    ) -> Result<(), NetworkManagerError> {
-        let bgp_session = BgpSession::new(config);
-        let mut interface = Interface::new(bgp_session.get_ip().clone());
-        interface.set_bgp_session(bgp_session)?;
-        self.insert_router_interface(router_id, interface)
-    }
-
     pub fn start(&mut self) -> Result<(), NetworkManagerError> {
         info!("Starting network");
 
@@ -238,8 +225,6 @@ impl std::error::Error for NetworkManagerError {}
 mod tests {
     use super::*;
     use crate::components::advertisement::Advertisement;
-    use crate::components::bgp::bgp_config::SessionConfig;
-    use crate::components::bgp::bgp_session::SessionType;
     use crate::modules::router::{Router, RouterOptions};
     use std::net::Ipv4Addr;
 
@@ -524,32 +509,6 @@ mod tests {
             assert_eq!(received_ad, &test_ad);
         }
 
-        assert!(network.stop().is_ok());
-    }
-
-    #[test]
-    fn create_bgp_session() {
-        let mut thread_manager = ThreadManager::new();
-        let mut network = NetworkManager::new(&mut thread_manager);
-
-        let router_id = Uuid::new_v4();
-        network.create_router(router_id);
-
-        let config = SessionConfig {
-            session_type: SessionType::IBgp,
-            as_number: 65000,
-            ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
-            ..Default::default()
-        };
-        network.create_bgp_session(&router_id, config).unwrap();
-
-        assert!(network.start().is_ok());
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(network
-            .router_sm
-            .get(&router_id)
-            .unwrap()
-            .get_runner_active(&network.thread_manager));
         assert!(network.stop().is_ok());
     }
 }
