@@ -1,10 +1,9 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::bgp::{
-    bgp_config::{ProcessConfig, SessionConfig},
-    bgp_rib::BgpRibInterface,
     bgp_session::BgpSession,
+    bgp_config::{ProcessConfig, SessionConfig},
+    bgp_rib::{BgpRib, BgpRibInterface},
 };
-use crate::components::bgp_rib::BgpRib;
 use log::error;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -85,6 +84,15 @@ impl BgpProcess {
             .flatten()
             .collect();
         self.rib.update(all_advertisements);
+    }
+
+    pub fn get_best_route_changes(&mut self) {
+    }
+
+    pub fn generate_advertisements(&mut self) {
+    }
+
+    pub fn send(&mut self) {
     }
 }
 

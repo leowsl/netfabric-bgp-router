@@ -1,6 +1,6 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::bgp::bgp_bestroute::BestRoute;
-use crate::components::bgp_rib::BgpRib;
+use crate::components::bgp::bgp_rib::BgpRib;
 use crate::components::interface::Interface;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};

@@ -1,4 +1,4 @@
-use crate::{components::bgp_rib::BgpRib, live_bgp_parser::LiveBgpParserStatistics};
+use crate::{components::bgp::bgp_rib::BgpRib, live_bgp_parser::LiveBgpParserStatistics};
 use std::fmt;
 
 

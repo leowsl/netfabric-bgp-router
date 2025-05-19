@@ -8,4 +8,3 @@ pub use utils::state_machine::StateMachine;
 pub use utils::state_machine::State;
 pub use modules::router::Router;
 pub use modules::live_bgp_parser;
-pub use components::bgp_rib;

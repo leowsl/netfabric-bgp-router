@@ -1,4 +1,4 @@
-use crate::components::bgp_rib::BgpRib;
+use crate::components::bgp::bgp_rib::BgpRib;
 use crate::components::filters::Filter;
 use crate::components::interface::Interface;
 use crate::modules::router::Router;
