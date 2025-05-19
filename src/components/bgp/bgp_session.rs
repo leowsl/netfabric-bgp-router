@@ -44,22 +44,25 @@ impl BgpSession {
 
     pub fn receive(&mut self) -> Result<Vec<Advertisement>, BgpSessionError> {
         match &mut self.interface {
+            None => Err(BgpSessionError::InterfaceNotSet),
             Some(interface) => {
                 interface.receive()?;
                 Ok(interface.get_incoming_advertisements())
             }
-            None => Err(BgpSessionError::InterfaceNotSet),
         }
     }
 
     fn send(&mut self, advertisements: Vec<Advertisement>) -> Result<(), BgpSessionError> {
         match &mut self.interface {
-            Some(interface) => {
-                interface.push_outgoing_advertisements(advertisements)?;
-                interface.send();
-                Ok(())
-            }
             None => Err(BgpSessionError::InterfaceNotSet),
+            Some(interface) => {
+                let send_result = interface.push_outgoing_advertisements(advertisements);
+                interface.send();
+                match send_result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(BgpSessionError::InterfaceError(e)),
+                }
+            }
         }
     }
 }

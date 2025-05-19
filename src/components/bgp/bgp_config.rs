@@ -14,3 +14,17 @@ impl Default for SessionConfig {
         }
     }
 }
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessConfig {
+    pub next_hop_self: bool,
+}
+
+impl Default for ProcessConfig {
+    fn default() -> Self {
+        Self {
+            next_hop_self: false,
+        }
+    }
+}
