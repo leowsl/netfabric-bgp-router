@@ -1,9 +1,9 @@
 use crate::components::advertisement::Advertisement;
-use crate::components::bgp::bgp_session::BgpSession;
 use crate::components::filters::{Filter, NoFilter};
 use crate::modules::router::RouterError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::mutex_utils::TryLockWithTimeout;
+use crate::ThreadManager;
 use std::mem::replace;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -16,7 +16,6 @@ const OUTGOING_ADVERTISEMENTS_CAPACITY: usize = 1000;
 pub struct Interface {
     pub id: Uuid,
     ip_address: IpAddr,
-    bgp_session: Option<BgpSession>,
     in_channel: Option<Arc<Mutex<MessageReceiver>>>,
     out_channel: Option<MessageSender>,
     in_filter: Box<dyn Filter<Advertisement>>,
@@ -32,7 +31,6 @@ impl Interface {
         Self {
             id: Uuid::new_v4(),
             ip_address,
-            bgp_session: None,
             in_channel: None,
             out_channel: None,
             in_filter: Box::new(NoFilter),
@@ -44,26 +42,28 @@ impl Interface {
         }
     }
 
+    pub fn new_loopback(
+        thread_manager: &mut ThreadManager,
+        ip_address: IpAddr,
+        queue_buffer_size: usize,
+        link_buffer_size: usize,
+    ) -> Self {
+        let mut interface = Self::new(ip_address);
+        let (tx, rx) = thread_manager
+            .get_message_bus_channel_pair(link_buffer_size)
+            .unwrap();
+        interface.set_in_channel(rx);
+        interface.set_out_channel(tx);
+        interface.set_buffer_size(queue_buffer_size, queue_buffer_size);
+        interface
+    }
+
     pub fn get_ip_address(&self) -> IpAddr {
         self.ip_address
     }
 
     pub fn set_ip_address(&mut self, address: IpAddr) {
         self.ip_address = address;
-    }
-
-    pub fn get_bgp_session(&self) -> Option<&BgpSession> {
-        self.bgp_session.as_ref()
-    }
-
-    pub fn set_bgp_session(&mut self, bgp_session: BgpSession) -> Result<(), RouterError> {
-        if self.bgp_session.is_some() {
-            return Err(RouterError::InterfaceError(
-                "Interface already has a BGP session!".to_string(),
-            ));
-        }
-        self.bgp_session = Some(bgp_session);
-        Ok(())
     }
 
     pub fn set_in_channel(&mut self, in_channel: MessageReceiver) {
@@ -109,11 +109,11 @@ impl Interface {
                         ))?
                         .clone();
                     if self.in_filter.filter(&mut ad) {
-                        if self.incoming_advertisements.len() < self.incoming_advertisements.capacity()
+                        if self.incoming_advertisements.len()
+                            < self.incoming_advertisements.capacity()
                         {
                             self.incoming_advertisements.push(ad);
-                        } 
-                        else {
+                        } else {
                             // When buffer is full, we stop receiving
                             // log::info!("Received advertisements capacity exceeded!");
                             break;
@@ -133,7 +133,12 @@ impl Interface {
             None => (),
             Some(channel) => {
                 // Drain does not seem to work, so we work with std::mem::replace
-                for mut ad in replace(&mut self.outgoing_advertisements, Vec::with_capacity(self.buffer_size_outgoing)).into_iter() {
+                for mut ad in replace(
+                    &mut self.outgoing_advertisements,
+                    Vec::with_capacity(self.buffer_size_outgoing),
+                )
+                .into_iter()
+                {
                     if self.out_filter.filter(&mut ad) {
                         match channel.try_send(Box::new(ad)) {
                             Ok(_) => {}
@@ -204,8 +209,6 @@ impl Interface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::bgp::bgp_config::SessionConfig;
-    use crate::components::bgp::bgp_session::SessionType;
     use crate::components::filters::{HostFilter, OwnASFilter};
     use crate::components::route::PathElement;
     use crate::utils::message_bus::MessageBus;
@@ -219,7 +222,6 @@ mod tests {
         let interface = Interface::new(ip);
 
         assert_eq!(interface.get_ip_address(), ip);
-        assert!(interface.get_bgp_session().is_none());
         assert!(interface.incoming_advertisements.is_empty());
         assert!(interface.outgoing_advertisements.is_empty());
     }
@@ -231,30 +233,6 @@ mod tests {
 
         interface.set_ip_address(new_ip);
         assert_eq!(interface.get_ip_address(), new_ip);
-    }
-
-    #[test]
-    fn test_bgp_session_management() {
-        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let config = SessionConfig {
-            session_type: SessionType::IBgp,
-            as_number: 65000,
-            ..Default::default()
-        };
-        let bgp_session = BgpSession::new(config);
-
-        // Test setting BGP session
-        assert!(interface.set_bgp_session(bgp_session).is_ok());
-        assert!(interface.get_bgp_session().is_some());
-
-        // Test setting second BGP session (should fail)
-        let second_config = SessionConfig {
-            session_type: SessionType::EBgp,
-            as_number: 65001,
-            ..Default::default()
-        };
-        let second_session = BgpSession::new(second_config);
-        assert!(interface.set_bgp_session(second_session).is_err());
     }
 
     #[test]
@@ -378,15 +356,20 @@ mod tests {
         interface.set_in_channel(receiver);
         interface.set_out_channel(sender);
 
-
         // Test outgoing buffer
         assert_eq!(interface.outgoing_advertisements.len(), 0);
-        interface.push_outgoing_advertisements(vec![Advertisement::default(); 5]).unwrap();
+        interface
+            .push_outgoing_advertisements(vec![Advertisement::default(); 5])
+            .unwrap();
         assert_eq!(interface.outgoing_advertisements.len(), 5);
-        assert!(interface.push_outgoing_advertisement(Advertisement::default()).is_err());
+        assert!(interface
+            .push_outgoing_advertisement(Advertisement::default())
+            .is_err());
         assert_eq!(interface.outgoing_advertisements.len(), 5);
         interface.send();
-        assert!(interface.push_outgoing_advertisement(Advertisement::default()).is_ok());
+        assert!(interface
+            .push_outgoing_advertisement(Advertisement::default())
+            .is_ok());
         assert_eq!(interface.outgoing_advertisements.len(), 1);
         interface.outgoing_advertisements.clear();
 
@@ -394,9 +377,11 @@ mod tests {
         assert_eq!(interface.incoming_advertisements.len(), 0);
         interface.receive().unwrap();
         assert_eq!(interface.incoming_advertisements.len(), 5);
-        
+
         // We send one more. It should remain in the channel
-        interface.push_outgoing_advertisement(Advertisement::default()).unwrap();
+        interface
+            .push_outgoing_advertisement(Advertisement::default())
+            .unwrap();
         interface.send();
         assert_eq!(interface.incoming_advertisements.len(), 5);
 
