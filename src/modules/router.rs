@@ -116,7 +116,7 @@ impl Router {
     pub fn get_incoming_advertisements(&mut self) -> Result<(), RouterError> {
         for interface in &mut self.interfaces {
             interface.receive().unwrap_or_else(|e| {
-                warn!("[{:.5}] {e}", self.id);
+                warn!("[{:.5}] {:?}", self.id, e);
             });
             self.incoming_advertisements
                 .extend(interface.get_incoming_advertisements());
@@ -162,7 +162,7 @@ impl Router {
             interface
                 .push_outgoing_advertisements(self.outgoing_advertisements.clone())
                 .unwrap_or_else(|e| {
-                    warn!("[{:.5}] {e}", self.id);
+                    warn!("[{:.5}] {:?}", self.id, e);
                 });
             interface.send();
         }

@@ -140,8 +140,7 @@ impl LiveBgpParser {
                 self.interface
                     .as_mut()
                     .unwrap()
-                    .push_outgoing_advertisement(Advertisement::from(message.data))
-                    .map_err(|e| BgpParserError::SendError(e.to_string()))?;
+                    .push_outgoing_advertisement(Advertisement::from(message.data))?;
                 self.statistics.messages_processed += 1;
             }
         }
@@ -260,6 +259,8 @@ pub enum BgpParserError {
     SendError(String),
     #[error("Stream ended unexpectedly")]
     StreamEnded,
+    #[error("Interface error: {0}")]
+    InterfaceError(String),
 }
 impl From<reqwest::Error> for BgpParserError {
     fn from(err: reqwest::Error) -> Self {
@@ -280,6 +281,12 @@ impl From<std::sync::mpsc::SendError<Box<dyn Message>>> for BgpParserError {
 impl From<std::sync::mpsc::TrySendError<Box<dyn Message>>> for BgpParserError {
     fn from(err: std::sync::mpsc::TrySendError<Box<dyn Message>>) -> Self {
         BgpParserError::SendError(err.to_string())
+    }
+}
+
+impl From<crate::components::interface::InterfaceError> for BgpParserError {
+    fn from(err: crate::components::interface::InterfaceError) -> Self {
+        BgpParserError::InterfaceError(format!("{:?}", err))
     }
 }
 

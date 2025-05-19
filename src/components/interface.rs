@@ -1,12 +1,11 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::filters::{Filter, NoFilter};
-use crate::modules::router::RouterError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
 use crate::utils::mutex_utils::TryLockWithTimeout;
 use crate::ThreadManager;
 use std::mem::replace;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use uuid::Uuid;
 
 const INCOMING_ADVERTISEMENTS_CAPACITY: usize = 1000;
@@ -94,7 +93,7 @@ impl Interface {
         self.incoming_advertisements = Vec::with_capacity(self.buffer_size_incoming);
         self.outgoing_advertisements = Vec::with_capacity(self.buffer_size_outgoing);
     }
-    pub fn receive(&mut self) -> Result<(), RouterError> {
+    pub fn receive(&mut self) -> Result<(), InterfaceError> {
         match &self.in_channel {
             None => {
                 return Ok(());
@@ -104,7 +103,7 @@ impl Interface {
                 while let Ok(message) = channel.try_recv() {
                     let mut ad = message
                         .cast::<Advertisement>()
-                        .ok_or(RouterError::InterfaceError(
+                        .ok_or(InterfaceError::ParserError(
                             "Received message is not an advertisement!".to_string(),
                         ))?
                         .clone();
@@ -163,7 +162,7 @@ impl Interface {
     pub fn push_outgoing_advertisement(
         &mut self,
         advertisement: Advertisement,
-    ) -> Result<(), RouterError> {
+    ) -> Result<(), InterfaceError> {
         if self.out_channel.is_none() {
             // Dont send if theres no out channel
             return Ok(());
@@ -171,9 +170,7 @@ impl Interface {
         if self.outgoing_advertisements.len() < self.outgoing_advertisements.capacity() {
             self.outgoing_advertisements.push(advertisement);
         } else {
-            return Err(RouterError::InterfaceError(
-                "Outgoing advertisements buffer capacity exceeded!".to_string(),
-            ));
+            return Err(InterfaceError::OutgoingBufferCapacityExceeded());
         }
         Ok(())
     }
@@ -181,7 +178,7 @@ impl Interface {
     pub fn push_outgoing_advertisements(
         &mut self,
         mut advertisements: Vec<Advertisement>,
-    ) -> Result<(), RouterError> {
+    ) -> Result<(), InterfaceError> {
         if advertisements.len() == 0 {
             return Ok(());
         }
@@ -192,10 +189,7 @@ impl Interface {
         let capacity_left =
             self.outgoing_advertisements.capacity() - self.outgoing_advertisements.len();
         if advertisements.len() > capacity_left {
-            let err: Result<(), RouterError> = Err(RouterError::InterfaceError(format!(
-                "Outgoing advertisements buffer capacity exceeded! Dropping {} advertisements!",
-                advertisements.len() - capacity_left
-            )));
+            let err: Result<(), InterfaceError> = Err(InterfaceError::OutgoingBufferCapacityExceeded());
             self.outgoing_advertisements
                 .extend(advertisements.drain(..capacity_left));
             return err;
@@ -203,6 +197,20 @@ impl Interface {
         self.outgoing_advertisements
             .extend(advertisements.drain(..));
         Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum InterfaceError {
+    OutgoingBufferCapacityExceeded(),
+    IncomingBufferCapacityExceeded(),
+    ParserError(String),
+    MutexError(String),
+}
+
+impl<T> From<TryLockError<T>> for InterfaceError {
+    fn from(err: TryLockError<T>) -> Self {
+        InterfaceError::MutexError(format!("Mutex error: {:?}", err))
     }
 }
 
