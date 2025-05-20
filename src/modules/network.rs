@@ -3,17 +3,16 @@ use crate::components::bgp::bgp_process::BgpProcess;
 use crate::components::bgp::bgp_rib::BgpRib;
 use crate::components::bgp::bgp_session::{BgpSession, BgpSessionError};
 use crate::components::interface::Interface;
-use crate::modules::router::Router;
+use crate::modules::router::{Router, RouterError};
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::state_machine::{StateMachine, StateMachineError};
 use crate::utils::thread_manager::{ThreadManager, ThreadManagerError};
+use crate::utils::topology::NetworkTopology;
 use log::info;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-
-use super::router::RouterError;
 
 pub struct NetworkManager<'a> {
     rib: Arc<Mutex<BgpRib>>,
@@ -32,8 +31,59 @@ impl<'a> NetworkManager<'a> {
         }
     }
 
+    pub fn from_topology(
+        topology: &NetworkTopology,
+        thread_manager: &'a mut ThreadManager,
+    ) -> Result<Self, NetworkManagerError> {
+        let mut network = NetworkManager::new(thread_manager);
+
+        // Create routers
+        for (vertex_id, vertex) in topology.get_topology().iter_vertices() {
+            let process = BgpProcess::from_config(vertex.process_config.clone());
+            let router = Router::new(vertex_id.clone())
+                .with_options(vertex.router_options.clone())
+                .with_bgp_process(process);
+            network.insert_router(router);
+        }
+
+        // Create sessions between routers
+        for (vertex1_id, vertex2_id, edge) in topology.get_topology().iter_edges() {
+            let (session1, session2) = network.new_bgp_session_pair(
+                edge.session_configs.0.clone(),
+                edge.session_configs.1.clone(),
+                edge.link_buffer_size as usize,
+            )?;
+            let (router1, router2) = network.get_router_pair_mut(&vertex1_id, &vertex2_id)?;
+
+            router1
+                .get_bgp_processes_mut()
+                .get_mut(0)
+                .ok_or_else(|| {
+                    RouterError::ProcessError(
+                        "Router has more or less than one BGP process".to_string(),
+                    )
+                })
+                .and_then(|process| Ok(process.add_session(session1)))?;
+
+            router2
+                .get_bgp_processes_mut()
+                .get_mut(0)
+                .ok_or_else(|| {
+                    RouterError::ProcessError(
+                        "Router has more or less than one BGP process".to_string(),
+                    )
+                })
+                .and_then(|process| Ok(process.add_session(session2)))?;
+        }
+        Ok(network)
+    }
+
     pub fn borrow_thread_manager(&'a mut self) -> &'a mut ThreadManager {
         self.thread_manager
+    }
+
+    pub fn get_rib_mutex(&self) -> Arc<Mutex<BgpRib>> {
+        self.rib.clone()
     }
 
     pub fn get_rib_lock(&self) -> std::sync::MutexGuard<'_, BgpRib> {
@@ -54,8 +104,10 @@ impl<'a> NetworkManager<'a> {
         } else {
             let id: Uuid = router.id.clone();
             for process in router.get_bgp_processes_mut() {
-                process.set_rib(self.rib.clone());
-                println!("initiated router procces with id: {:?}", process.id);
+                // TODO: find out why the there is a deadlock with the shared rib mutes!
+
+                // process.set_rib(self.rib.clone());
+                process.set_router_id(&id);
             }
             self.routers.insert(id, router);
         }
@@ -149,7 +201,9 @@ impl<'a> NetworkManager<'a> {
         link_buffer_size: usize,
     ) -> Result<(), NetworkManagerError> {
         if session1.get_interface().is_some() || session2.get_interface().is_some() {
-            return Err(NetworkManagerError::ConnectionError("BGP session already connected".to_string()));
+            return Err(NetworkManagerError::ConnectionError(
+                "BGP session already connected".to_string(),
+            ));
         }
         let (interface1, interface2) = self.new_interface_pair(
             session1.get_config().interface_ip.clone(),
@@ -167,7 +221,6 @@ impl<'a> NetworkManager<'a> {
     ) -> Result<Uuid, NetworkManagerError> {
         let router_id = Uuid::new_v4();
         process.set_router_id(&router_id);
-        process.set_rib(self.rib.clone());
         self.insert_router(Router::new(router_id).with_bgp_process(process));
         Ok(router_id)
     }
@@ -250,10 +303,114 @@ impl std::error::Error for NetworkManagerError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::advertisement::Advertisement;
+    use crate::components::advertisement::{Advertisement, Announcement};
     use crate::components::bgp::bgp_config::ProcessConfig;
-    use crate::modules::router::{Router};
+    use crate::components::route::PathElement;
+    use crate::modules::router::{Router, RouterOptions};
     use std::net::Ipv4Addr;
+
+    /// Helper function to test connectivity between two BgpSession instances.
+    fn assert_bgp_sessions_connectivity(
+        session1: &mut BgpSession,
+        session2: &mut BgpSession,
+    ) -> Result<(), NetworkManagerError> {
+        let ad = Advertisement::default();
+        session1.send(vec![ad.clone(); 5])?;
+        session2.send(vec![ad.clone(); 5])?;
+
+        let rec1 = session1.receive()?;
+        let rec2 = session2.receive()?;
+        assert_eq!(rec1.len(), 5);
+        assert_eq!(rec2.len(), 5);
+        for i in 0..5 {
+            assert_eq!(
+                rec1[i], ad,
+                "Session1 received wrong advertisement at index {i}: {:?}",
+                rec1[i]
+            );
+            assert_eq!(
+                rec2[i], ad,
+                "Session2 received wrong advertisement at index {i}: {:?}",
+                rec2[i]
+            );
+        }
+        Ok(())
+    }
+
+    /// Helper function to test connectivity between two BgpProcess instances.
+    fn assert_bgp_processes_connectivity(
+        process1: &mut BgpProcess,
+        process2: &mut BgpProcess,
+        test_with_rib: bool,
+    ) -> Result<(), NetworkManagerError> {
+        let ad1 = Advertisement {
+            timestamp: std::time::Instant::now().elapsed().as_secs_f64(),
+            peer: "192.168.0.1".to_string(),
+            path: Some(vec![PathElement::ASN(1)]),
+            announcements: Some(vec![Announcement {
+                prefixes: vec!["1.0.0.0/8".to_string()],
+                next_hop: "192.168.0.1".to_string(),
+            }]),
+            ..Default::default()
+        };
+        let ad2 = Advertisement {
+            timestamp: std::time::Instant::now().elapsed().as_secs_f64(),
+            peer: "192.168.0.2".to_string(),
+            path: Some(vec![PathElement::ASN(2)]),
+            announcements: Some(vec![Announcement {
+                prefixes: vec!["2.0.0.0/8".to_string()],
+                next_hop: "192.168.0.2".to_string(),
+            }]),
+            ..Default::default()
+        };
+        // Clear previous iteration's advertisements
+        process1.clear_advertisements();
+        process1.clear_bestroute_updates();
+        process2.clear_advertisements();
+        process2.clear_bestroute_updates();
+        process1.rib_interface.clear_rib();
+        process2.rib_interface.clear_rib();
+
+        process1.inject_advertisement(ad1.clone());
+        process2.inject_advertisement(ad2.clone());
+
+        process1.send();
+        process2.send();
+
+        process1.receive();
+        process2.receive();
+
+        if test_with_rib {
+            let bestroute1 = process1
+                .rib_interface
+                .get_bestroute(IpAddr::V4(Ipv4Addr::new(2, 0, 10, 25)))
+                .unwrap();
+            assert_eq!(bestroute1.0.next_hop, "192.168.0.2".to_string());
+
+            let bestroute2 = process2
+                .rib_interface
+                .get_bestroute(IpAddr::V4(Ipv4Addr::new(1, 0, 10, 25)))
+                .unwrap();
+            assert_eq!(bestroute2.0.next_hop, "192.168.0.1".to_string());
+
+            process1.get_best_route_changes();
+            process2.get_best_route_changes();
+
+            process1.generate_advertisement();
+            process2.generate_advertisement();
+
+            let p1_ad = process1.get_advertisements().get(0).unwrap();
+            assert_eq!(p1_ad.peer, process1.config.ip.to_string());
+            assert_eq!(p1_ad.announcements, ad2.announcements);
+            assert_eq!(p1_ad.id, process1.id.to_string());
+
+            let p2_ad = process2.get_advertisements().get(0).unwrap();
+            assert_eq!(p2_ad.peer, process2.config.ip.to_string());
+            assert_eq!(p2_ad.announcements, ad1.announcements);
+            assert_eq!(p2_ad.id, process2.id.to_string());
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_create_network_manager() -> Result<(), NetworkManagerError> {
@@ -414,18 +571,7 @@ mod tests {
         );
 
         // Test Session Connectivity
-        let ad = Advertisement::default();
-        session1.send(vec![ad.clone(); 5])?;
-        session2.send(vec![ad.clone(); 5])?;
-
-        let rec1 = session1.receive()?;
-        let rec2 = session2.receive()?;
-        assert_eq!(rec1.len(), 5);
-        assert_eq!(rec2.len(), 5);
-        for i in 0..5 {
-            assert_eq!(rec1[i], ad);
-            assert_eq!(rec2[i], ad);
-        }
+        assert_bgp_sessions_connectivity(&mut session1, &mut session2)?;
 
         Ok(())
     }
@@ -434,7 +580,7 @@ mod tests {
     fn connect_bgp_session_pair() -> Result<(), NetworkManagerError> {
         let mut thread_manager = ThreadManager::new();
         let mut network = NetworkManager::new(&mut thread_manager);
-        
+
         let mut session1 = BgpSession::from_config(SessionConfig {
             session_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             interface_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
@@ -460,18 +606,7 @@ mod tests {
         );
 
         // Test Session Connectivity
-        let ad = Advertisement::default();
-        session1.send(vec![ad.clone(); 5])?;
-        session2.send(vec![ad.clone(); 5])?;
-
-        let rec1 = session1.receive()?;
-        let rec2 = session2.receive()?;
-        assert_eq!(rec1.len(), 5);
-        assert_eq!(rec2.len(), 5);
-        for i in 0..5 {
-            assert_eq!(rec1[i], ad);
-            assert_eq!(rec2[i], ad);
-        }
+        assert_bgp_sessions_connectivity(&mut session1, &mut session2)?;
 
         Ok(())
     }
@@ -492,5 +627,71 @@ mod tests {
         assert_eq!(bgp_processes.len(), 1);
         assert_eq!(bgp_processes[0].config.as_number, 65000);
         Ok(())
+    }
+
+    #[test]
+    fn test_from_topology() {
+        let mut thread_manager = ThreadManager::new();
+        let mut topology = NetworkTopology::new();
+
+        // Create Triangle Topology + One single router
+        let r1 = topology.add_router(RouterOptions::default(), ProcessConfig::default());
+        let r2 = topology.add_router(RouterOptions::default(), ProcessConfig::default());
+        let r3 = topology.add_router(RouterOptions::default(), ProcessConfig::default());
+        let r4 = topology.add_router(RouterOptions::default(), ProcessConfig::default());
+        topology.add_connection(
+            r1,
+            r2,
+            (SessionConfig::default(), SessionConfig::default()),
+            100,
+        );
+        topology.add_connection(
+            r2,
+            r3,
+            (SessionConfig::default(), SessionConfig::default()),
+            100,
+        );
+        topology.add_connection(
+            r1,
+            r3,
+            (SessionConfig::default(), SessionConfig::default()),
+            100,
+        );
+        let mut network = NetworkManager::from_topology(&topology, &mut thread_manager).unwrap();
+
+        // Check if the network is created correctly
+        let routers = &network.routers;
+        assert!(routers.contains_key(&r1));
+        assert!(routers.contains_key(&r2));
+        assert!(routers.contains_key(&r3));
+        assert!(routers.contains_key(&r4));
+
+        let (router1, router2) = network.get_router_pair_mut(&r1, &r2).unwrap();
+        assert_bgp_processes_connectivity(
+            router1.get_bgp_processes_mut().get_mut(0).unwrap(),
+            router2.get_bgp_processes_mut().get_mut(0).unwrap(),
+            true,
+        )
+        .unwrap();
+
+        let (router1, router3) = network.get_router_pair_mut(&r1, &r2).unwrap();
+        assert_bgp_processes_connectivity(
+            router1.get_bgp_processes_mut().get_mut(0).unwrap(),
+            router3.get_bgp_processes_mut().get_mut(0).unwrap(),
+            true,
+        )
+        .unwrap();
+
+        let (router2, router3) = network.get_router_pair_mut(&r1, &r2).unwrap();
+        assert_bgp_processes_connectivity(
+            router2.get_bgp_processes_mut().get_mut(0).unwrap(),
+            router3.get_bgp_processes_mut().get_mut(0).unwrap(),
+            true,
+        )
+        .unwrap();
+
+        network.start().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        network.stop().unwrap();
     }
 }

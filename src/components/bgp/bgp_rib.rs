@@ -38,7 +38,6 @@ impl BgpRibInterface {
         self.client_id = id.clone();
     }
 
-    #[cfg(test)]
     pub fn get_client_id(&self) -> &Uuid {
         &self.client_id
     }
@@ -50,35 +49,50 @@ impl BgpRibInterface {
 
     pub fn set_rib(&mut self, rib: Arc<Mutex<BgpRib>>) {
         self.rib = rib;
-        self.rib.lock().unwrap().register_router(&self.client_id);
     }
 
     pub fn update(&mut self, advertisements: Vec<Advertisement>) {
         for advertisement in advertisements {
-            let mut bgp_rib_lock = self
+            if let Ok(mut bgp_rib_lock) = self
                 .rib
                 .try_lock_with_timeout(std::time::Duration::from_millis(100))
-                .unwrap();
+            {
+                self.bestroute_updates.0.extend(
+                    advertisement
+                        .get_announcements()
+                        .iter()
+                        .filter_map(|route| bgp_rib_lock.insert_route(route, &self.client_id)),
+                );
+                self.bestroute_updates.1.extend(
+                    advertisement
+                        .get_withdrawals()
+                        .iter()
+                        .filter_map(|route| bgp_rib_lock.remove_route(route, &self.client_id)),
+                );
 
-            self.bestroute_updates.0.extend(
-                advertisement
-                    .get_announcements()
-                    .iter()
-                    .filter_map(|route| bgp_rib_lock.insert_route(route, &self.client_id)),
-            );
-            self.bestroute_updates.1.extend(
-                advertisement
-                    .get_withdrawals()
-                    .iter()
-                    .filter_map(|route| bgp_rib_lock.remove_route(route, &self.client_id)),
-            );
-
-            drop(bgp_rib_lock);
+                drop(bgp_rib_lock);
+            } else {
+                log::error!(
+                    "Failed to acquire RIB lock for client {}, skipping update",
+                    self.client_id
+                );
+            }
         }
     }
 
     pub fn get_bestroute_updates(&mut self) -> (Vec<BestRoute>, Vec<BestRoute>) {
         return std::mem::replace(&mut self.bestroute_updates, (Vec::new(), Vec::new()));
+    }
+
+    pub fn get_bestroute(&self, address: IpAddr) -> Option<BestRoute> {
+        self.rib
+            .lock()
+            .unwrap()
+            .get_bestroute_for_router(address, &self.client_id)
+    }
+
+    pub fn clear_rib(&mut self) {
+        self.rib.lock().unwrap().clear();
     }
 }
 
@@ -249,7 +263,13 @@ impl BgpRib {
         }
         None
     }
+
+    pub fn clear(&mut self) {
+        self.treebitmap = IpNetworkTable::new();
+        self.router_mask_map = RouterMaskMap::new();
+    }
 }
+
 impl Clone for BgpRib {
     fn clone(&self) -> Self {
         let mut new_rib = BgpRib::new();

@@ -1,14 +1,9 @@
-use crate::components::advertisement::Advertisement;
-use crate::components::bgp::bgp_bestroute::BestRoute;
 use crate::components::bgp::bgp_process::BgpProcess;
-use crate::components::bgp::bgp_rib::BgpRib;
-use crate::components::interface::Interface;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::message_bus::{MessageReceiver, MessageSender};
-use crate::utils::mutex_utils::TryLockWithTimeout;
 use crate::utils::state_machine::{State, StateTransition};
-use log::{error, warn};
-use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use log::error;
+use std::sync::{PoisonError, TryLockError};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -17,7 +12,7 @@ pub enum RouterChannel {
     Outbound(MessageSender),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouterOptions {}
 impl Default for RouterOptions {
     fn default() -> Self {
@@ -43,6 +38,11 @@ impl Router {
 
     pub fn set_options(&mut self, options: RouterOptions) {
         self.options = options;
+    }
+
+    pub fn with_options(mut self, options: RouterOptions) -> Self {
+        self.set_options(options);
+        return self;
     }
 
     pub fn new_with_options(id: Uuid, options: RouterOptions) -> Self {
@@ -118,8 +118,9 @@ impl<T> From<TryLockError<T>> for RouterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::advertisement::Announcement;
+    use crate::components::advertisement::{Advertisement, Announcement};
     use crate::components::bgp::bgp_session::BgpSession;
+    use crate::components::interface::Interface;
     use crate::components::route::PathElement;
     use crate::utils::state_machine::{StateMachine, StateMachineError};
     use crate::utils::thread_manager::ThreadManager;
@@ -185,8 +186,8 @@ mod tests {
             ..Default::default()
         };
         router.get_bgp_processes_mut()[0].inject_advertisement(ad);
-        router.work();  // Send Cycle
-        router.work();  // Receive Cycle
+        router.work(); // Send Cycle
+        router.work(); // Receive Cycle
 
         let process = &router.bgp_processes[0];
         let rib = process.rib_interface.get_rib_mutex();

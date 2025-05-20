@@ -25,7 +25,10 @@ impl BgpProcess {
             sessions: Vec::new(),
             config: ProcessConfig::default(),
             // it's not the prettiest solution, but if we set a new rib, the old one will dropped as it's arc has 0 references
-            rib_interface: BgpRibInterface::new(Arc::new(Mutex::new(BgpRib::new())), Uuid::new_v4()),
+            rib_interface: BgpRibInterface::new(
+                Arc::new(Mutex::new(BgpRib::new())),
+                Uuid::new_v4(),
+            ),
             bestroute_updates: (Vec::new(), Vec::new()),
             advertisement: Vec::new(),
         }
@@ -83,19 +86,19 @@ impl BgpProcess {
         return self;
     }
 
-    fn add_session(&mut self, session: BgpSession) {
+    pub fn add_session(&mut self, session: BgpSession) {
         self.sessions.push(session);
     }
 
-    fn remove_session(&mut self, session_id: &Uuid) {
+    pub fn remove_session(&mut self, session_id: &Uuid) {
         self.sessions.retain(|session| &session.id != session_id);
     }
 
-    fn sessions_iter(&self) -> impl Iterator<Item = &BgpSession> {
+    pub fn sessions_iter(&self) -> impl Iterator<Item = &BgpSession> {
         self.sessions.iter()
     }
 
-    fn sessions_iter_mut(&mut self) -> impl Iterator<Item = &mut BgpSession> {
+    pub fn sessions_iter_mut(&mut self) -> impl Iterator<Item = &mut BgpSession> {
         self.sessions.iter_mut()
     }
 
@@ -107,6 +110,16 @@ impl BgpProcess {
     #[cfg(test)]
     pub fn get_advertisements(&self) -> &Vec<Advertisement> {
         &self.advertisement
+    }
+
+    #[cfg(test)]
+    pub fn clear_advertisements(&mut self) {
+        self.advertisement.clear();
+    }
+
+    #[cfg(test)]
+    pub fn clear_bestroute_updates(&mut self) {
+        self.bestroute_updates = (Vec::new(), Vec::new());
     }
 
     pub fn receive(&mut self) {
