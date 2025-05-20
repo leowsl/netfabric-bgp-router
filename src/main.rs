@@ -46,47 +46,41 @@ fn test_create_and_start_network(
     network_manager.create_router(router3_id);
 
     // Connections
-    // 0 -> 1
-    network_manager.create_router_interface_pair(
-        (&router0_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 1, 1))),
-        (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 1, 2))),
-        250,
-        250,
-    )?;
-    // 0 -> 2
-    network_manager.create_router_interface_pair(
-        (&router0_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 2, 1))),
-        (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 2, 2))),
-        250,
-        500,
-    )?;
-    // 1 -> 2
-    network_manager.create_router_interface_pair(
-        (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 3, 1))),
-        (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 3, 2))),
-        250,
-        500,
-    )?;
-    // 1 -> 3
-    network_manager.create_router_interface_pair(
-        (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 4, 1))),
-        (&router3_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 4, 2))),
-        250,
-        250,
-    )?;
-    // 2 -> 3
-    network_manager.create_router_interface_pair(
-        (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 5, 1))),
-        (&router3_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 5, 2))),
-        250,
-        250,
-    )?;
-
-    // Some settings
-    network_manager.get_router_mut(&router3_id).unwrap().set_options(RouterOptions {
-        drop_incoming_advertisements: true,
-        ..Default::default()
-    });
+    // // 0 -> 1
+    // network_manager.create_router_interface_pair(
+    //     (&router0_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 1, 1))),
+    //     (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 1, 2))),
+    //     250,
+    //     250,
+    // )?;
+    // // 0 -> 2
+    // network_manager.create_router_interface_pair(
+    //     (&router0_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 2, 1))),
+    //     (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 2, 2))),
+    //     250,
+    //     500,
+    // )?;
+    // // 1 -> 2
+    // network_manager.create_router_interface_pair(
+    //     (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 3, 1))),
+    //     (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 3, 2))),
+    //     250,
+    //     500,
+    // )?;
+    // // 1 -> 3
+    // network_manager.create_router_interface_pair(
+    //     (&router1_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 4, 1))),
+    //     (&router3_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 4, 2))),
+    //     250,
+    //     250,
+    // )?;
+    // // 2 -> 3
+    // network_manager.create_router_interface_pair(
+    //     (&router2_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 5, 1))),
+    //     (&router3_id, &IpAddr::V4(Ipv4Addr::new(1, 0, 5, 2))),
+    //     250,
+    //     250,
+    // )?;
 
     // Start the network
     network_manager.start()?;

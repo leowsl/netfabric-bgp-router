@@ -36,6 +36,10 @@ impl BgpSession {
         return session;
     }
 
+    pub fn get_config(&self) -> &SessionConfig {
+        &self.config
+    }
+
     pub fn with_interface(mut self, interface: Interface) -> Self {
         self.set_interface(interface);
         return self;

@@ -18,28 +18,16 @@ pub enum RouterChannel {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct RouterOptions {
-    pub use_bgp_rib: bool,
-    pub capacity: usize,
-    pub drop_incoming_advertisements: bool, // If true, this router will act as a blackhole
-}
+pub struct RouterOptions {}
 impl Default for RouterOptions {
     fn default() -> Self {
-        Self {
-            use_bgp_rib: true,
-            capacity: 1000,
-            drop_incoming_advertisements: false,
-        }
+        Self {}
     }
 }
 
 pub struct Router {
     pub id: Uuid,
     pub options: RouterOptions,
-    interfaces: Vec<Interface>,
-    bgp_rib: Option<Arc<Mutex<BgpRib>>>,
-    incoming_advertisements: Vec<Advertisement>,
-    outgoing_advertisements: Vec<Advertisement>,
     bgp_processes: Vec<BgpProcess>,
 }
 
@@ -48,38 +36,12 @@ impl Router {
         let options = RouterOptions::default();
         Router {
             id,
-            bgp_rib: None,
-            incoming_advertisements: Vec::with_capacity(options.capacity),
-            outgoing_advertisements: Vec::with_capacity(options.capacity),
-            interfaces: Vec::new(),
             bgp_processes: Vec::new(),
             options,
         }
     }
 
     pub fn set_options(&mut self, options: RouterOptions) {
-        if options.capacity < self.options.capacity {
-            if self.incoming_advertisements.len() > options.capacity {
-                warn!(
-                    "[{:.5}] Decreasing capacity leads to loss of incoming advertisements.",
-                    self.id
-                );
-                self.incoming_advertisements.truncate(options.capacity);
-            }
-            if self.outgoing_advertisements.len() > options.capacity {
-                warn!(
-                    "[{:.5}] Decreasing capacity leads to loss of outgoing advertisements.",
-                    self.id
-                );
-                self.outgoing_advertisements.truncate(options.capacity);
-            }
-            self.incoming_advertisements.shrink_to(options.capacity);
-            self.outgoing_advertisements.shrink_to(options.capacity);
-        } else if options.capacity > self.options.capacity {
-            let additional_capacity = options.capacity - self.options.capacity;
-            self.incoming_advertisements.reserve(additional_capacity);
-            self.outgoing_advertisements.reserve(additional_capacity);
-        }
         self.options = options;
     }
 
@@ -89,34 +51,13 @@ impl Router {
         return router;
     }
 
-    pub fn add_interface(&mut self, interface: Interface) {
-        self.interfaces.push(interface);
-    }
-
-    pub fn get_interface(&self, id: &Uuid) -> Option<&Interface> {
-        self.interfaces.iter().find(|interface| interface.id == *id)
-    }
-
-    pub fn get_interface_by_index(&self, index: usize) -> Option<&Interface> {
-        self.interfaces.get(index)
-    }
-
-    pub fn get_interface_mut(&mut self, id: &Uuid) -> Option<&mut Interface> {
-        self.interfaces
-            .iter_mut()
-            .find(|interface| interface.id == *id)
-    }
-
-    pub fn get_interface_by_index_mut(&mut self, index: usize) -> Option<&mut Interface> {
-        self.interfaces.get_mut(index)
-    }
-
-    pub fn add_bgp_process(&mut self, process: BgpProcess) {
+    pub fn add_bgp_process(&mut self, mut process: BgpProcess) {
+        process.set_router_id(&self.id);
         self.bgp_processes.push(process);
     }
 
     pub fn with_bgp_process(mut self, process: BgpProcess) -> Self {
-        self.bgp_processes.push(process);
+        self.add_bgp_process(process);
         return self;
     }
 
@@ -127,139 +68,17 @@ impl Router {
     pub fn get_bgp_processes_mut(&mut self) -> &mut Vec<BgpProcess> {
         &mut self.bgp_processes
     }
-
-    pub fn set_rib(&mut self, rib: &Arc<Mutex<BgpRib>>) {
-        self.bgp_rib = Some(rib.clone());
-        rib.lock().unwrap().register_router(&self.id);
-    }
-
-    pub fn get_incoming_advertisements(&mut self) -> Result<(), RouterError> {
-        for process in &mut self.bgp_processes {
-            process.receive();
-        }
-
-        for interface in &mut self.interfaces {
-            interface.receive().unwrap_or_else(|e| {
-                warn!("[{:.5}] {:?}", self.id, e);
-            });
-            self.incoming_advertisements
-                .extend(interface.get_incoming_advertisements());
-        }
-        Ok(())
-    }
-
-    pub fn update_rib(&mut self) -> Result<(Vec<BestRoute>, Vec<BestRoute>), RouterError> {
-        let mut announcements = Vec::new();
-        let mut withdrawals = Vec::new();
-
-        for ad in self.incoming_advertisements.clone() {
-            announcements.extend(ad.get_announcements());
-            withdrawals.extend(ad.get_withdrawals());
-        }
-
-        let mut bgp_rib_lock = self
-            .bgp_rib
-            .as_ref()
-            .ok_or_else(|| RouterError::RibNotSet(self.id.to_string()))?
-            .try_lock_with_timeout(std::time::Duration::from_millis(100))?;
-
-        let bestroute_announcements: Vec<BestRoute> = announcements
-            .iter()
-            .filter_map(|route| bgp_rib_lock.insert_route(route, &self.id))
-            .collect();
-
-        let bestroute_withdrawals: Vec<BestRoute> = withdrawals
-            .iter()
-            .filter_map(|route| bgp_rib_lock.remove_route(route, &self.id))
-            .collect();
-
-        Ok((bestroute_announcements, bestroute_withdrawals))
-    }
-
-    // TODO: Implement this
-    pub fn get_best_route_changes(&mut self) -> Result<Vec<Advertisement>, RouterError> {
-        return Ok(Vec::new());
-    }
-
-    pub fn process_outgoing_advertisements(&mut self) -> Result<(), RouterError> {
-        for interface in &mut self.interfaces {
-            interface
-                .push_outgoing_advertisements(self.outgoing_advertisements.clone())
-                .unwrap_or_else(|e| {
-                    warn!("[{:.5}] {:?}", self.id, e);
-                });
-            interface.send();
-        }
-        self.outgoing_advertisements.clear();
-        Ok(())
-    }
 }
 
 impl State for Router {
     fn work(&mut self) -> StateTransition {
-        // Store incoming advertisements in self.incoming_advertisements
-        match self.get_incoming_advertisements() {
-            Ok(_) => {}
-            Err(e) => {
-                warn!(
-                    "[{:.5}] Error processing incoming advertisements: {}",
-                    self.id, e
-                );
-            }
-        };
-
-        if self.options.drop_incoming_advertisements {
-            self.incoming_advertisements.clear();
-            return StateTransition::Continue;
+        for process in &mut self.bgp_processes {
+            process.receive();
+            process.get_best_route_changes();
+            process.generate_advertisement();
+            // TODO: At this point we can share advertisements between different processes
+            process.send();
         }
-
-        // If rib is not enabled, no advertisements will be sent
-        if self.options.use_bgp_rib {
-            // Update self.rib
-            match self.update_rib() {
-                Ok((announcements, withdrawals)) => {
-                    // TODO: Create advertisements from the bestroutes
-                    // if announcements.len() > 0 || withdrawals.len() > 0 {
-                    //     log::info!("[{:.5}] Got Bestroute Changes: Announcements: {}", self.id, announcements.len());
-                    //     log::info!("[{:.5}] Got Bestroute Changes: Withdrawals: {}", self.id, withdrawals.len());
-                    // }
-                }
-                Err(e) => {
-                    warn!("[{:.5}] Error updating RIB: {}", self.id, e);
-                }
-            };
-        } else {
-            // If RIB is not enabled, we clear the buffer to not overflow
-            self.incoming_advertisements.clear();
-        }
-
-        // TODO: Implement this
-        // match self.get_best_route_changes() {
-        //     Ok(_) => {},    // TODO: Fix when implemented
-        //     Err(e) => {
-        //         warn!("Error getting best route changes: {}", e);
-        //     }
-        // };
-
-        // TODO: remove this hack when get_best_route_changes is implemented
-        self.outgoing_advertisements.clear();
-        self.outgoing_advertisements = self.incoming_advertisements.drain(..).collect();
-
-        // Send outgoing_advertisements
-        match self.process_outgoing_advertisements() {
-            Ok(_) => (),
-            Err(e) => {
-                warn!(
-                    "[{:.5}] Error processing outgoing advertisements: {}",
-                    self.id, e
-                );
-            }
-        };
-
-        // Make sure the buffers are empty
-        self.incoming_advertisements.clear();
-        self.outgoing_advertisements.clear();
-
         StateTransition::Continue
     }
 }
@@ -299,13 +118,12 @@ impl<T> From<TryLockError<T>> for RouterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::advertisement::{AdvertisementType, Announcement};
+    use crate::components::advertisement::Announcement;
+    use crate::components::bgp::bgp_session::BgpSession;
     use crate::components::route::PathElement;
     use crate::utils::state_machine::{StateMachine, StateMachineError};
     use crate::utils::thread_manager::ThreadManager;
-    use ip_network::IpNetwork;
-    use std::net::IpAddr;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn test_create_router() {
@@ -314,28 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_router_set_rib() {
-        use crate::utils::router_mask::RouterMask;
-
-        let id = Uuid::new_v4();
-        let mut router = Router::new(id.clone());
-        let rib = Arc::new(Mutex::new(BgpRib::new()));
-        router.set_rib(&rib);
-        assert!(router.bgp_rib.is_some());
-        assert_eq!(
-            router
-                .bgp_rib
-                .unwrap()
-                .lock()
-                .unwrap()
-                .get_router_mask_map()
-                .get_all(),
-            &RouterMask(0b1)
-        );
-    }
-
-    #[test]
-    fn test_router_state() -> Result<(), StateMachineError> {
+    fn test_router_state_machine() -> Result<(), StateMachineError> {
         let mut thread_manager: ThreadManager = ThreadManager::new();
         let router = Router::new(Uuid::new_v4());
         let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
@@ -346,95 +143,58 @@ mod tests {
     }
 
     #[test]
-    fn test_router_interface() -> Result<(), StateMachineError> {
-        let mut thread_manager: ThreadManager = ThreadManager::new();
-        let router_id = Uuid::new_v4();
-        let mut router = Router::new(router_id.clone());
-
-        // Create and set up interface
-        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let (tx1, rx1) = thread_manager.get_message_bus_channel_pair(1000)?;
-        let (tx2, rx2) = thread_manager.get_message_bus_channel_pair(1000)?;
-        interface.set_in_channel(rx1);
-        interface.set_out_channel(tx2);
-        router.add_interface(interface);
-
-        let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
-        state_machine.start()?;
-
-        let advertisement = Advertisement {
-            timestamp: std::time::Instant::now().elapsed().as_secs_f64(),
-            peer: "192.168.1.1".to_string(),
-            ..Default::default()
-        };
-        tx1.send(Box::new(advertisement.clone())).unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
+    fn test_router_add_bgp_process() {
+        let mut router = Router::new(Uuid::new_v4()).with_bgp_process(BgpProcess::new());
+        router.add_bgp_process(BgpProcess::new());
+        assert_eq!(router.bgp_processes.len(), 2);
         assert_eq!(
-            rx2.try_recv().unwrap().cast::<Advertisement>().unwrap(),
-            &advertisement
+            router.bgp_processes[0].rib_interface.get_client_id(),
+            &router.id
         );
-        state_machine.stop()?;
-        Ok(())
+        assert_eq!(
+            router.bgp_processes[1].rib_interface.get_client_id(),
+            &router.id
+        );
     }
 
     #[test]
-    fn test_router_bgp_update() -> Result<(), StateMachineError> {
+    fn test_router_work() {
         let mut thread_manager: ThreadManager = ThreadManager::new();
-        let router_id = Uuid::new_v4();
-        let mut router = Router::new(router_id.clone());
+        let interface = Interface::new_loopback(
+            &mut thread_manager,
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            10,
+            10,
+        );
+        let session = BgpSession::new().with_interface(interface);
+        let process = BgpProcess::new().with_session(session);
+        let mut router = Router::new(Uuid::new_v4()).with_bgp_process(process);
 
-        // Create and set up BGP RIB
-        let bgp_rib = Arc::new(Mutex::new(BgpRib::new()));
-        router.set_rib(&bgp_rib);
+        // Test with no ads
+        assert!(matches!(router.work(), StateTransition::Continue));
 
-        // Create and set up interface
-        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let (tx1, rx1) = thread_manager.get_message_bus_channel_pair(1000)?;
-        interface.set_in_channel(rx1);
-        router.add_interface(interface);
-
-        let mut state_machine = StateMachine::new(&mut thread_manager, router)?;
-        state_machine.start()?;
-
-        let advertisement = Advertisement {
+        // Test with ads
+        let ad = Advertisement {
             timestamp: 0.0,
-            peer: "192.168.1.1".to_string(),
-            peer_asn: "1".to_string(),
-            id: "test".to_string(),
-            host: "test".to_string(),
-            msg_type: AdvertisementType::Update,
-            path: Some(vec![PathElement::ASN(1), PathElement::ASN(2)]),
-            community: None,
-            origin: None,
+            peer: "192.168.0.1".to_string(),
+            path: Some(vec![PathElement::ASN(1)]),
             announcements: Some(vec![Announcement {
-                next_hop: "192.168.1.1".to_string(),
-                prefixes: vec!["192.168.1.0/24".to_string()],
+                prefixes: vec!["1.0.0.0/8".to_string()],
+                next_hop: "192.168.0.1".to_string(),
             }]),
-            raw: None,
-            withdrawals: None,
             ..Default::default()
         };
-        tx1.send(Box::new(advertisement.clone())).unwrap();
+        router.get_bgp_processes_mut()[0].inject_advertisement(ad);
+        router.work();  // Send Cycle
+        router.work();  // Receive Cycle
 
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        state_machine.stop()?;
+        let process = &router.bgp_processes[0];
+        let rib = process.rib_interface.get_rib_mutex();
+        let rib_lock = rib.lock().unwrap();
 
-        let rib = bgp_rib.lock().unwrap();
-        assert_eq!(rib.get_prefix_count(), (1, 0));
-        let routes =
-            rib.get_routes_for_router(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), &router_id);
-        assert_eq!(routes.len(), 1);
-        assert_eq!(
-            routes[0].prefix,
-            IpNetwork::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap()
-        );
-        assert_eq!(routes[0].next_hop, "192.168.1.1");
-        assert_eq!(
-            routes[0].as_path,
-            vec![PathElement::ASN(1), PathElement::ASN(2)]
-        );
-        Ok(())
+        let bestroute = rib_lock
+            .get_bestroute_for_router(IpAddr::V4(Ipv4Addr::new(1, 0, 10, 25)), &router.id)
+            .unwrap();
+        assert_eq!(bestroute.0.next_hop, "192.168.0.1".to_string());
     }
 }

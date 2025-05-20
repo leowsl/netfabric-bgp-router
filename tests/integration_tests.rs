@@ -70,8 +70,6 @@ fn test_live_bgp_parser() -> Result<(), StateMachineError> {
     let (parser, mut router) = get_parser_with_router(&mut network_manager)
         .map_err(|e| StateMachineError::StateMachineError(e.to_string()))?;
     router.set_options(RouterOptions {
-        drop_incoming_advertisements: true,
-        use_bgp_rib: false,
         ..Default::default()
     });
     let (mut parser_sm, mut router_sm) = (

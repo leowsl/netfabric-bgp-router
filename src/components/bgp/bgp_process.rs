@@ -99,6 +99,16 @@ impl BgpProcess {
         self.sessions.iter_mut()
     }
 
+    #[cfg(test)]
+    pub fn inject_advertisement(&mut self, advertisement: Advertisement) {
+        self.advertisement.push(advertisement);
+    }
+
+    #[cfg(test)]
+    pub fn get_advertisements(&self) -> &Vec<Advertisement> {
+        &self.advertisement
+    }
+
     pub fn receive(&mut self) {
         let all_advertisements: Vec<Advertisement> = self
             .sessions_iter_mut()

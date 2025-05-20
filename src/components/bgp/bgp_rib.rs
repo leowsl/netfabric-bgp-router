@@ -38,6 +38,16 @@ impl BgpRibInterface {
         self.client_id = id.clone();
     }
 
+    #[cfg(test)]
+    pub fn get_client_id(&self) -> &Uuid {
+        &self.client_id
+    }
+
+    #[cfg(test)]
+    pub fn get_rib_mutex(&self) -> Arc<Mutex<BgpRib>> {
+        self.rib.clone()
+    }
+
     pub fn set_rib(&mut self, rib: Arc<Mutex<BgpRib>>) {
         self.rib = rib;
         self.rib.lock().unwrap().register_router(&self.client_id);

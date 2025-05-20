@@ -387,9 +387,6 @@ mod tests {
         let (parser, mut router) = get_parser_with_router(&mut network_manager).unwrap();
 
         router.set_options(RouterOptions {
-            capacity: 1000,
-            use_bgp_rib: false,
-            drop_incoming_advertisements: true,
             ..Default::default()
         });
 
