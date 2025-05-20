@@ -78,6 +78,11 @@ impl BgpProcess {
         self.add_session(session);
     }
 
+    pub fn with_session(mut self, session: BgpSession) -> Self {
+        self.add_session(session);
+        return self;
+    }
+
     fn add_session(&mut self, session: BgpSession) {
         self.sessions.push(session);
     }

@@ -34,6 +34,10 @@ impl<'a> NetworkManager<'a> {
         }
     }
 
+    pub fn borrow_thread_manager(&'a mut self) -> &'a mut ThreadManager {
+        self.thread_manager
+    }
+
     pub fn get_rib_lock(&self) -> std::sync::MutexGuard<'_, BgpRib> {
         self.rib.lock().unwrap()
     }
@@ -52,6 +56,11 @@ impl<'a> NetworkManager<'a> {
         } else {
             let id: Uuid = router.id.clone();
             router.set_rib(&self.rib);
+            for process in router.get_bgp_processes_mut() {
+                process.set_router_id(&id);
+                process.set_rib(self.rib.clone());
+                println!("initiated router procces with id: {:?}", process.id);
+            }
             self.routers.insert(id, router);
         }
     }

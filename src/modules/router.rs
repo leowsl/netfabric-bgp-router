@@ -124,12 +124,20 @@ impl Router {
         &self.bgp_processes
     }
 
+    pub fn get_bgp_processes_mut(&mut self) -> &mut Vec<BgpProcess> {
+        &mut self.bgp_processes
+    }
+
     pub fn set_rib(&mut self, rib: &Arc<Mutex<BgpRib>>) {
         self.bgp_rib = Some(rib.clone());
         rib.lock().unwrap().register_router(&self.id);
     }
 
     pub fn get_incoming_advertisements(&mut self) -> Result<(), RouterError> {
+        for process in &mut self.bgp_processes {
+            process.receive();
+        }
+
         for interface in &mut self.interfaces {
             interface.receive().unwrap_or_else(|e| {
                 warn!("[{:.5}] {:?}", self.id, e);

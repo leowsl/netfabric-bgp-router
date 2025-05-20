@@ -1,20 +1,22 @@
 use crate::components::advertisement::Advertisement;
-use crate::components::interface::Interface;
+use crate::components::bgp::bgp_config::SessionConfig;
+use crate::components::bgp::bgp_process::BgpProcess;
+use crate::components::bgp::bgp_session::BgpSession;
 use crate::components::ris_live_data::RisLiveMessage;
 use crate::modules::network::NetworkManagerError;
 use crate::modules::router::Router;
 use crate::utils::message_bus::Message;
 use crate::utils::state_machine::{State, StateTransition};
-use crate::utils::thread_manager::ThreadManager;
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use log::{error, info, warn};
-use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::task::JoinHandle;
+
+use super::network::NetworkManager;
 
 static RIS_STREAM_URL: &str =
     "https://ris-live.ripe.net/v1/stream/?format=json&client=Netfabric-Test";
@@ -64,23 +66,26 @@ pub struct LiveBgpParser {
     tokio_runtime: Arc<Runtime>,
     byte_stream_receiver: Option<Receiver<Bytes>>,
     bytes_buffer: BytesMut,
+    advertisements: Vec<Advertisement>,
     restart_policy: RestartPolicy,
     statistics: LiveBgpParserStatistics,
-    interface: Option<Interface>,
+    bgp_sessions: Vec<BgpSession>,
 }
 impl LiveBgpParser {
-    pub fn new(interface: Interface) -> Self {
+    pub fn new(bgp_session: BgpSession) -> Self {
         Self {
             url: RIS_STREAM_URL,
             stream_handle: None,
             tokio_runtime: Arc::new(Runtime::new().unwrap()),
             bytes_buffer: BytesMut::with_capacity(BUFFER_CAPACITY),
+            advertisements: Vec::new(),
             restart_policy: RestartPolicy::default(),
             byte_stream_receiver: None,
             statistics: LiveBgpParserStatistics::default(),
-            interface: Some(interface),
+            bgp_sessions: vec![bgp_session],
         }
     }
+
     pub fn start_stream(&mut self) -> Result<(), BgpParserError> {
         let url_clone: &'static str = self.url;
 
@@ -137,10 +142,7 @@ impl LiveBgpParser {
             let chunk = self.bytes_buffer.split_to(pos + 1);
             let message = serde_json::from_slice::<RisLiveMessage>(&chunk)?;
             if message.msg_type == "ris_message" {
-                self.interface
-                    .as_mut()
-                    .unwrap()
-                    .push_outgoing_advertisement(Advertisement::from(message.data))?;
+                self.advertisements.push(Advertisement::from(message.data));
                 self.statistics.messages_processed += 1;
             }
         }
@@ -150,12 +152,8 @@ impl LiveBgpParser {
 
 impl State for LiveBgpParser {
     fn work(&mut self) -> StateTransition {
-        if self.interface.is_none() {
-            if self.stream_handle.is_some() {
-                let _ = self.stop_stream();
-            }
-            warn!("No interface set for LiveBGP Parser. Stopping State Machine.");
-            return StateTransition::Stop;
+        if self.bgp_sessions.is_empty() {
+            warn!("No BGP sessions set for LiveBGP Parser.");
         }
 
         // Start stream if not running
@@ -175,11 +173,11 @@ impl State for LiveBgpParser {
                     }
                 }
             }
-        }
+        };
 
         // Process buffer and send advertisements
         match self.process_buffer() {
-            Ok(_) => { /*info!("Processing Buffer")*/ }
+            Ok(_) => {}
             Err(e) => {
                 error!("Couldn't process buffer! {}. Timeout for 1 sec to give routers time to catch up.", e);
                 self.statistics.errors_encountered += 1;
@@ -191,12 +189,17 @@ impl State for LiveBgpParser {
                     RestartPolicy::RestartOnError => return StateTransition::Continue,
                 }
             }
-        }
+        };
 
         // Send advertisements
-        assert!(self.interface.is_some());    // Save unwrap, because we checked self.interface.is_none() at the beginning od the loop
-        self.interface.as_mut().unwrap().send();
-        
+        for session in &mut self.bgp_sessions {
+            let res = session.send(self.advertisements.clone());
+            if let Err(e) = res {
+                error!("Couldn't send advertisements to BGP session! {:?}", e);
+            }
+        }
+        self.advertisements.clear();
+
         StateTransition::Continue
     }
     fn cleanup(&mut self) {
@@ -215,36 +218,32 @@ impl Clone for LiveBgpParser {
             tokio_runtime: Arc::new(Runtime::new().unwrap()),
             byte_stream_receiver: None,
             bytes_buffer: self.bytes_buffer.clone(),
+            advertisements: self.advertisements.clone(),
             restart_policy: self.restart_policy.clone(),
             statistics: self.statistics.clone(),
-            interface: None,
+            bgp_sessions: Vec::new(),
         }
     }
 }
 
+pub fn get_parser_with_bgp_session(
+    network_manager: &mut NetworkManager,
+) -> Result<(LiveBgpParser, BgpSession), NetworkManagerError> {
+    let (session1, session2) = network_manager
+        .new_bgp_session_pair(SessionConfig::default(), SessionConfig::default(), 1000)
+        .unwrap();
+
+    let parser = LiveBgpParser::new(session1);
+
+    Ok((parser, session2))
+}
+
 pub fn get_parser_with_router(
-    thread_manager: &mut ThreadManager,
-    interface_buffer_size: usize,
-    link_buffer_size: usize,
+    network_manager: &mut NetworkManager
 ) -> Result<(LiveBgpParser, Router), NetworkManagerError> {
-    
-    // Interfaces
-    let mut parser_interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-    let mut router_interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-    
-    // Channels
-    let (tx, rx) = thread_manager.get_message_bus_channel_pair(link_buffer_size)?;
-    parser_interface.set_out_channel(tx);
-    router_interface.set_in_channel(rx);
-
-    parser_interface.set_buffer_size(0, interface_buffer_size);
-    router_interface.set_buffer_size(interface_buffer_size, 0);
-
-    // Parser & Router
-    let parser = LiveBgpParser::new(parser_interface);
-    let mut router = Router::new(uuid::Uuid::new_v4());
-    router.add_interface(router_interface);
-
+    let (parser, router_session) = get_parser_with_bgp_session(network_manager)?;
+    let process = BgpProcess::new().with_session(router_session);
+    let router = Router::new(uuid::Uuid::new_v4()).with_bgp_process(process);
     Ok((parser, router))
 }
 
@@ -293,21 +292,22 @@ impl From<crate::components::interface::InterfaceError> for BgpParserError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::message_bus::MessageReceiverExt;
+    use crate::components::bgp::bgp_config::SessionConfig;
+    use crate::modules::network::NetworkManager;
     use crate::utils::state_machine::StateMachine;
     use crate::utils::thread_manager::ThreadManager;
-    use std::net::IpAddr;
-    use std::net::Ipv4Addr;
 
     #[test]
     fn test_live_bgp_parser_initialization() {
-        let interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        let parser = LiveBgpParser::new(interface);
+        let session = BgpSession::new();
+        let parser = LiveBgpParser::new(session);
 
         assert_eq!(parser.url, RIS_STREAM_URL);
         assert!(parser.stream_handle.is_none());
         assert!(parser.byte_stream_receiver.is_none());
         assert_eq!(parser.restart_policy, RestartPolicy::RestartOnError);
+        assert_eq!(parser.bgp_sessions.len(), 1);
+        assert_ne!(parser.bgp_sessions[0].id, uuid::Uuid::nil());
         assert_eq!(parser.statistics.messages_processed, 0);
         assert_eq!(parser.statistics.bytes_received, 0);
         assert_eq!(parser.statistics.errors_encountered, 0);
@@ -316,43 +316,38 @@ mod tests {
     #[test]
     fn test_run_parser() {
         let mut thread_manager = ThreadManager::new();
-
-        // Create parser and router
-        let (tx, rx) = thread_manager.get_message_bus_channel_pair(1000).unwrap();
-        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        interface.set_out_channel(tx);
-        let parser = LiveBgpParser::new(interface);
+        let session = BgpSession::new();
+        let parser = LiveBgpParser::new(session);
 
         // Create  and start state machines
         let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
 
+        // Let run to check its not crashing
         parser_sm.start().unwrap();
-
-        // Test if messages are coming in
-        assert!(rx.receive_with_retry(10, 100).is_ok());
-
+        std::thread::sleep(std::time::Duration::from_secs(10));
         parser_sm.stop().unwrap();
     }
 
     #[test]
-    fn test_live_parser_statistics() {
+    fn test_live_bgp_parser_statistics() {
         const TEST_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
-        let mut thread_manager = ThreadManager::new();
 
-        // Create parser and router
-        let (tx, rx) = thread_manager.get_message_bus_channel_pair(1000).unwrap();
-        let mut interface = Interface::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-        interface.set_out_channel(tx);
-        let parser = LiveBgpParser::new(interface);
+        let mut thread_manager = ThreadManager::new();
+        let network = NetworkManager::new(&mut thread_manager);
+        let (session1, mut session2) = network
+            .new_bgp_session_pair(SessionConfig::default(), SessionConfig::default(), 1000)
+            .unwrap();
+
+        let parser = LiveBgpParser::new(session1);
+        let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
 
         // Create and start parser & Dummy router so that channel does not overflow
-        let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
         parser_sm.start().unwrap();
-        let dummy_router = thread_manager
+        let dummy_session = thread_manager
             .start_thread(move || {
                 let start = std::time::Instant::now();
                 while start.elapsed() < TEST_DURATION {
-                    let _ = rx.try_recv();
+                    let _ = session2.receive();
                 }
             })
             .unwrap();
@@ -364,7 +359,8 @@ mod tests {
         let final_state: LiveBgpParser = parser_sm
             .get_final_state_cloned::<LiveBgpParser>(&mut thread_manager)
             .unwrap();
-        thread_manager.join_thread::<()>(&dummy_router).unwrap();
+        thread_manager.join_thread::<()>(&dummy_session).unwrap();
+
         let statistics: &LiveBgpParserStatistics = final_state.get_statistics();
         println!("Statistics: {}", statistics);
 
@@ -376,9 +372,10 @@ mod tests {
     #[test]
     fn test_parser_with_router() {
         use crate::modules::router::RouterOptions;
-        
+
         let mut thread_manager = ThreadManager::new();
-        let (parser, mut router) = get_parser_with_router(&mut thread_manager, 1000, 100).unwrap();
+        let mut network_manager = NetworkManager::new(&mut thread_manager);
+        let (parser, mut router) = get_parser_with_router(&mut network_manager).unwrap();
 
         router.set_options(RouterOptions {
             capacity: 1000,
@@ -389,7 +386,6 @@ mod tests {
 
         let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
         let mut router_sm = StateMachine::new(&mut thread_manager, router).unwrap();
-
 
         router_sm.start().unwrap();
         parser_sm.start().unwrap();
