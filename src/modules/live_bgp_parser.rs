@@ -72,7 +72,7 @@ pub struct LiveBgpParser {
     bgp_sessions: Vec<BgpSession>,
 }
 impl LiveBgpParser {
-    pub fn new(bgp_session: BgpSession) -> Self {
+    pub fn new() -> Self {
         Self {
             url: RIS_STREAM_URL,
             stream_handle: None,
@@ -82,8 +82,17 @@ impl LiveBgpParser {
             restart_policy: RestartPolicy::default(),
             byte_stream_receiver: None,
             statistics: LiveBgpParserStatistics::default(),
-            bgp_sessions: vec![bgp_session],
+            bgp_sessions: Vec::new(),
         }
+    }
+
+    pub fn add_bgp_session(&mut self, bgp_session: BgpSession) {
+        self.bgp_sessions.push(bgp_session);
+    }
+
+    pub fn with_bgp_sessions(mut self, bgp_session: BgpSession) -> Self {
+        self.add_bgp_session(bgp_session);
+        self
     }
 
     pub fn start_stream(&mut self) -> Result<(), BgpParserError> {
@@ -233,13 +242,13 @@ pub fn get_parser_with_bgp_session(
         .new_bgp_session_pair(SessionConfig::default(), SessionConfig::default(), 1000)
         .unwrap();
 
-    let parser = LiveBgpParser::new(session1);
+    let parser = LiveBgpParser::new().with_bgp_sessions(session1);
 
     Ok((parser, session2))
 }
 
 pub fn get_parser_with_router(
-    network_manager: &mut NetworkManager
+    network_manager: &mut NetworkManager,
 ) -> Result<(LiveBgpParser, Router), NetworkManagerError> {
     let (parser, router_session) = get_parser_with_bgp_session(network_manager)?;
     let process = BgpProcess::new().with_session(router_session);
@@ -300,7 +309,7 @@ mod tests {
     #[test]
     fn test_live_bgp_parser_initialization() {
         let session = BgpSession::new();
-        let parser = LiveBgpParser::new(session);
+        let parser = LiveBgpParser::new().with_bgp_sessions(session);
 
         assert_eq!(parser.url, RIS_STREAM_URL);
         assert!(parser.stream_handle.is_none());
@@ -317,7 +326,7 @@ mod tests {
     fn test_run_parser() {
         let mut thread_manager = ThreadManager::new();
         let session = BgpSession::new();
-        let parser = LiveBgpParser::new(session);
+        let parser = LiveBgpParser::new().with_bgp_sessions(session);
 
         // Create  and start state machines
         let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
@@ -338,7 +347,7 @@ mod tests {
             .new_bgp_session_pair(SessionConfig::default(), SessionConfig::default(), 1000)
             .unwrap();
 
-        let parser = LiveBgpParser::new(session1);
+        let parser = LiveBgpParser::new().with_bgp_sessions(session1);
         let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
 
         // Create and start parser & Dummy router so that channel does not overflow
@@ -404,5 +413,54 @@ mod tests {
         assert!(statistics.messages_processed > 0);
         assert!(statistics.bytes_received > 0);
         assert!(statistics.errors_encountered == 0);
+    }
+
+    #[test]
+    fn test_parser_with_multiple_sessions() {
+        const TEST_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
+
+        // Create network with 2 sessions
+        let mut thread_manager = ThreadManager::new();
+        let network = NetworkManager::new(&mut thread_manager);
+        let (session1, mut session2) = network
+            .new_bgp_session_pair(SessionConfig::default(), SessionConfig::default(), 1000)
+            .unwrap();
+        let (session3, mut session4) = network
+            .new_bgp_session_pair(SessionConfig::default(), SessionConfig::default(), 1000)
+            .unwrap();
+
+        // Create and start parser
+        let parser = LiveBgpParser::new()
+            .with_bgp_sessions(session1)
+            .with_bgp_sessions(session3);
+        let mut parser_sm = StateMachine::new(&mut thread_manager, parser).unwrap();
+        parser_sm.start().unwrap();
+
+        // Count how many messages are received for each session
+        let dummy_session = thread_manager
+            .start_thread(move || {
+                let start = std::time::Instant::now();
+                let mut count2 = 0;
+                let mut count4 = 0;
+                // Add 100ms to ensure all messages are received before the test ends
+                while start.elapsed() < TEST_DURATION + std::time::Duration::from_millis(100) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    let one = session2.receive().unwrap();
+                    let two = session4.receive().unwrap();
+                    count2 += one.len();
+                    count4 += two.len();
+                }
+                (count2, count4)
+            })
+            .unwrap();
+
+        std::thread::sleep(TEST_DURATION);
+
+        // Stop and get results
+        parser_sm.stop().unwrap();
+        let (count2, count4) = thread_manager.join_thread::<(usize, usize)>(&dummy_session).unwrap();
+        assert!(count2 > 0);
+        assert!(count4 > 0);
+        assert_eq!(count2, count4);
     }
 }
