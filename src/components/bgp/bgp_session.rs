@@ -1,13 +1,19 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::bgp::bgp_config::SessionConfig;
 use crate::components::interface::{Interface, InterfaceError};
-
 use uuid::Uuid;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub enum OriginType {
+    IGP,
+    EGP,
+    INCOMPLETE,
+}
 
 #[derive(Debug)]
 pub struct BgpSession {
     pub id: Uuid,
-    as_number: u64,
+    config: SessionConfig,
     interface: Option<Interface>,
 }
 
@@ -15,19 +21,24 @@ impl BgpSession {
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
-            as_number: 0,
+            config: SessionConfig::default(),
             interface: None,
         }
     }
 
     pub fn set_config(&mut self, config: SessionConfig) {
-        self.as_number = config.as_number;
+        self.config = config;
     }
 
     pub fn from_config(config: SessionConfig) -> Self {
         let mut session = Self::new();
         session.set_config(config);
         return session;
+    }
+
+    pub fn with_interface(mut self, interface: Interface) -> Self {
+        self.set_interface(interface);
+        return self;
     }
 
     pub fn set_interface(&mut self, interface: Interface) {
@@ -52,7 +63,7 @@ impl BgpSession {
         }
     }
 
-    fn send(&mut self, advertisements: Vec<Advertisement>) -> Result<(), BgpSessionError> {
+    pub fn send(&mut self, advertisements: Vec<Advertisement>) -> Result<(), BgpSessionError> {
         match &mut self.interface {
             None => Err(BgpSessionError::InterfaceNotSet),
             Some(interface) => {
@@ -88,11 +99,11 @@ mod tests {
     #[test]
     fn create_bgp_session() {
         let config = SessionConfig {
-            as_number: 0,
+            next_hop_self: true,
             ..Default::default()
         };
-        let session = BgpSession::from_config(config);
-        assert_eq!(session.as_number, 0);
+        let session = BgpSession::from_config(config.clone());
+        assert_eq!(session.config, config);
         assert!(session.interface.is_none());
     }
 

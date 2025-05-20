@@ -11,14 +11,36 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub struct BgpRibInterface {
-    router_id: Uuid,
+    client_id: Uuid,
     rib: Arc<Mutex<BgpRib>>,
+    bestroute_updates: (Vec<BestRoute>, Vec<BestRoute>),
 }
 
 impl BgpRibInterface {
+    pub fn initiate() -> Self {
+        Self {
+            client_id: Uuid::nil(),
+            rib: Arc::new(Mutex::new(BgpRib::new())),
+            bestroute_updates: (Vec::new(), Vec::new()),
+        }
+    }
+
     pub fn new(rib: Arc<Mutex<BgpRib>>, id: Uuid) -> Self {
         rib.lock().unwrap().register_router(&id);
-        Self { router_id: id, rib }
+        Self {
+            client_id: id,
+            rib,
+            bestroute_updates: (Vec::new(), Vec::new()),
+        }
+    }
+
+    pub fn set_client_id(&mut self, id: &Uuid) {
+        self.client_id = id.clone();
+    }
+
+    pub fn set_rib(&mut self, rib: Arc<Mutex<BgpRib>>) {
+        self.rib = rib;
+        self.rib.lock().unwrap().register_router(&self.client_id);
     }
 
     pub fn update(&mut self, advertisements: Vec<Advertisement>) {
@@ -28,23 +50,25 @@ impl BgpRibInterface {
                 .try_lock_with_timeout(std::time::Duration::from_millis(100))
                 .unwrap();
 
-            let announcements = advertisement.get_announcements();
-            let withdrawals = advertisement.get_withdrawals();
-
-            let bestroute_announcements: Vec<BestRoute> = announcements
-                .iter()
-                .filter_map(|route| bgp_rib_lock.insert_route(route, &self.router_id))
-                .collect();
-
-            let bestroute_withdrawals: Vec<BestRoute> = withdrawals
-                .iter()
-                .filter_map(|route| bgp_rib_lock.remove_route(route, &self.router_id))
-                .collect();
+            self.bestroute_updates.0.extend(
+                advertisement
+                    .get_announcements()
+                    .iter()
+                    .filter_map(|route| bgp_rib_lock.insert_route(route, &self.client_id)),
+            );
+            self.bestroute_updates.1.extend(
+                advertisement
+                    .get_withdrawals()
+                    .iter()
+                    .filter_map(|route| bgp_rib_lock.remove_route(route, &self.client_id)),
+            );
 
             drop(bgp_rib_lock);
-            drop(bestroute_announcements);
-            drop(bestroute_withdrawals);
         }
+    }
+
+    pub fn get_bestroute_updates(&mut self) -> (Vec<BestRoute>, Vec<BestRoute>) {
+        return std::mem::replace(&mut self.bestroute_updates, (Vec::new(), Vec::new()));
     }
 }
 
@@ -242,7 +266,7 @@ mod tests {
     use super::*;
     use crate::components::route::PathElement;
     use crate::utils::router_mask::RouterMask;
-    
+
     fn test_create_rib_with_routes() -> BgpRib {
         let mut rib = BgpRib::new();
         let id1 = Uuid::new_v4();

@@ -1,6 +1,10 @@
-use crate::components::bgp::bgp_rib::BgpRib;
+use crate::components::bgp::bgp_config::{ProcessConfig, SessionConfig};
+use crate::components::bgp::bgp_process::BgpProcess;
+use crate::components::bgp::bgp_rib::{BgpRib, BgpRibInterface};
+use crate::components::bgp::bgp_session::{BgpSession, BgpSessionError};
 use crate::components::filters::Filter;
 use crate::components::interface::Interface;
+use crate::components::route;
 use crate::modules::router::Router;
 use crate::utils::message_bus::MessageBusError;
 use crate::utils::state_machine::{StateMachine, StateMachineError};
@@ -56,6 +60,26 @@ impl<'a> NetworkManager<'a> {
         self.routers.get_mut(id)
     }
 
+    pub fn get_router_pair_mut(
+        &mut self,
+        router1_id: &Uuid,
+        router2_id: &Uuid,
+    ) -> Result<(&mut Router, &mut Router), NetworkManagerError> {
+        if !self.routers.contains_key(router1_id) {
+            return Err(NetworkManagerError::RouterNotFound(*router1_id));
+        }
+        if !self.routers.contains_key(router2_id) {
+            return Err(NetworkManagerError::RouterNotFound(*router2_id));
+        }
+
+        let [Some(router1), Some(router2)] =
+            self.routers.get_disjoint_mut([router1_id, router2_id])
+        else {
+            panic!("Couldn't get routers, even though the ids are keys in the HashMap");
+        };
+        Ok((router1, router2))
+    }
+
     pub fn connect_interface_pair(
         &mut self,
         interface1: &mut Interface,
@@ -81,6 +105,31 @@ impl<'a> NetworkManager<'a> {
             .ok_or(NetworkManagerError::RouterNotFound(*router_id))?;
         router.add_interface(interface);
         Ok(())
+    }
+
+    pub fn create_interface_pair(
+        &self,
+        ip1: IpAddr,
+        ip2: IpAddr,
+        link_buffer_size: usize,
+    ) -> Result<(Interface, Interface), NetworkManagerError> {
+        let mut interface1 = Interface::new(ip1);
+        let mut interface2 = Interface::new(ip2);
+
+        let (tx1, rx1) = self
+            .thread_manager
+            .get_message_bus_channel_pair(link_buffer_size)?;
+
+        let (tx2, rx2) = self
+            .thread_manager
+            .get_message_bus_channel_pair(link_buffer_size)?;
+
+        interface1.set_out_channel(tx1);
+        interface2.set_in_channel(rx1);
+        interface2.set_out_channel(tx2);
+        interface1.set_in_channel(rx2);
+
+        Ok((interface1, interface2))
     }
 
     pub fn create_router_interface_pair(
@@ -153,6 +202,35 @@ impl<'a> NetworkManager<'a> {
         Ok((router_interface_id, peer_interface_id))
     }
 
+    pub fn new_bgp_session_pair(
+        &self,
+        config1: SessionConfig,
+        config2: SessionConfig,
+        link_buffer_size: usize,
+    ) -> Result<(BgpSession, BgpSession), NetworkManagerError> {
+        let (interface1, interface2) = self.create_interface_pair(
+            config1.interface_ip.clone(),
+            config2.interface_ip.clone(),
+            link_buffer_size,
+        )?;
+
+        let session1 = BgpSession::from_config(config1).with_interface(interface1);
+        let session2 = BgpSession::from_config(config2).with_interface(interface2);
+
+        Ok((session1, session2))
+    }
+
+    pub fn new_router_with_bgp_process(
+        &mut self,
+        mut process: BgpProcess,
+    ) -> Result<Uuid, NetworkManagerError> {
+        let router_id = Uuid::new_v4();
+        process.set_router_id(&router_id);
+        process.set_rib(self.rib.clone());
+        self.insert_router(Router::new(router_id).with_bgp_process(process));
+        Ok(router_id)
+    }
+
     pub fn start(&mut self) -> Result<(), NetworkManagerError> {
         info!("Starting network");
 
@@ -187,6 +265,7 @@ pub enum NetworkManagerError {
     StateMachineError(StateMachineError),
     MessageBusError(MessageBusError),
     ThreadManagerError(ThreadManagerError),
+    BgpSessionError(BgpSessionError),
 }
 
 impl From<StateMachineError> for NetworkManagerError {
@@ -210,6 +289,12 @@ impl From<ThreadManagerError> for NetworkManagerError {
 impl From<RouterError> for NetworkManagerError {
     fn from(error: RouterError) -> Self {
         NetworkManagerError::RouterError(error)
+    }
+}
+
+impl From<BgpSessionError> for NetworkManagerError {
+    fn from(error: BgpSessionError) -> Self {
+        NetworkManagerError::BgpSessionError(error)
     }
 }
 
@@ -510,5 +595,110 @@ mod tests {
         }
 
         assert!(network.stop().is_ok());
+    }
+
+    #[test]
+    fn new_interface_pair() {
+        let mut thread_manager = ThreadManager::new();
+        let network = NetworkManager::new(&mut thread_manager);
+
+        let result = network.create_interface_pair(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
+            100,
+        );
+        assert!(result.is_ok());
+
+        let (interface1, interface2) = result.unwrap();
+        assert_eq!(
+            interface1.get_ip_address(),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))
+        );
+        assert_eq!(
+            interface2.get_ip_address(),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))
+        );
+    }
+
+    #[test]
+    fn get_router_pair_mut() {
+        let mut thread_manager = ThreadManager::new();
+        let mut network = NetworkManager::new(&mut thread_manager);
+
+        let router1_id = Uuid::new_v4();
+        let router2_id = Uuid::new_v4();
+        network.create_router(router1_id);
+        network.create_router(router2_id);
+
+        let result = network.get_router_pair_mut(&router1_id, &router2_id);
+        assert!(result.is_ok());
+        let (router1, router2) = result.unwrap();
+        assert_eq!(router1.id, router1_id);
+        assert_eq!(router2.id, router2_id);
+    }
+
+    #[test]
+    fn new_bgp_session_pair() -> Result<(), NetworkManagerError> {
+        let mut thread_manager = ThreadManager::new();
+        let network = NetworkManager::new(&mut thread_manager);
+
+        let config1 = SessionConfig {
+            session_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            interface_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            ..Default::default()
+        };
+        let config2 = SessionConfig {
+            session_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            interface_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
+            ..Default::default()
+        };
+
+        // Test Session Creation
+        let result = network.new_bgp_session_pair(config1, config2, 100);
+        assert!(result.is_ok());
+
+        let (mut session1, mut session2) = result.unwrap();
+        assert_eq!(
+            session1.get_interface().unwrap().get_ip_address(),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))
+        );
+        assert_eq!(
+            session2.get_interface().unwrap().get_ip_address(),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))
+        );
+
+        // Test Session Connectivity
+        let ad = Advertisement::default();
+        session1.send(vec![ad.clone(); 5])?;
+        session2.send(vec![ad.clone(); 5])?;
+
+        let rec1 = session1.receive()?;
+        let rec2 = session2.receive()?;
+        assert_eq!(rec1.len(), 5);
+        assert_eq!(rec2.len(), 5);
+        for i in 0..5 {
+            assert_eq!(rec1[i], ad);
+            assert_eq!(rec2[i], ad);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn new_router_with_bgp_process() -> Result<(), NetworkManagerError> {
+        let mut thread_manager = ThreadManager::new();
+        let mut network = NetworkManager::new(&mut thread_manager);
+
+        let process = BgpProcess::from_config(ProcessConfig {
+            as_number: 65000,
+            ..Default::default()
+        });
+        let router_id = network.new_router_with_bgp_process(process)?;
+
+        let router = network.get_router_mut(&router_id).unwrap();
+        let bgp_processes = router.get_bgp_processes();
+        assert_eq!(bgp_processes.len(), 1);
+        assert_eq!(bgp_processes[0].config.as_number, 65000);
+        Ok(())
     }
 }

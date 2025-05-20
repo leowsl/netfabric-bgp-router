@@ -1,5 +1,6 @@
 use crate::components::advertisement::Advertisement;
 use crate::components::bgp::bgp_bestroute::BestRoute;
+use crate::components::bgp::bgp_process::BgpProcess;
 use crate::components::bgp::bgp_rib::BgpRib;
 use crate::components::interface::Interface;
 use crate::utils::message_bus::MessageBusError;
@@ -39,6 +40,7 @@ pub struct Router {
     bgp_rib: Option<Arc<Mutex<BgpRib>>>,
     incoming_advertisements: Vec<Advertisement>,
     outgoing_advertisements: Vec<Advertisement>,
+    bgp_processes: Vec<BgpProcess>,
 }
 
 impl Router {
@@ -50,6 +52,7 @@ impl Router {
             incoming_advertisements: Vec::with_capacity(options.capacity),
             outgoing_advertisements: Vec::with_capacity(options.capacity),
             interfaces: Vec::new(),
+            bgp_processes: Vec::new(),
             options,
         }
     }
@@ -106,6 +109,19 @@ impl Router {
 
     pub fn get_interface_by_index_mut(&mut self, index: usize) -> Option<&mut Interface> {
         self.interfaces.get_mut(index)
+    }
+
+    pub fn add_bgp_process(&mut self, process: BgpProcess) {
+        self.bgp_processes.push(process);
+    }
+
+    pub fn with_bgp_process(mut self, process: BgpProcess) -> Self {
+        self.bgp_processes.push(process);
+        return self;
+    }
+
+    pub fn get_bgp_processes(&self) -> &Vec<BgpProcess> {
+        &self.bgp_processes
     }
 
     pub fn set_rib(&mut self, rib: &Arc<Mutex<BgpRib>>) {

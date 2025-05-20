@@ -2,15 +2,17 @@ use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
-    pub as_number: u64,
-    pub ip: IpAddr,
+    pub session_ip: IpAddr,
+    pub interface_ip: IpAddr,
+    pub next_hop_self: bool,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            as_number: 0,
-            ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            session_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            interface_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            next_hop_self: false,
         }
     }
 }
@@ -18,13 +20,15 @@ impl Default for SessionConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessConfig {
-    pub next_hop_self: bool,
+    pub ip: IpAddr,
+    pub as_number: u64,
 }
 
 impl Default for ProcessConfig {
     fn default() -> Self {
         Self {
-            next_hop_self: false,
+            ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            as_number: 0,
         }
     }
 }
